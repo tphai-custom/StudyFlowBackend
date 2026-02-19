@@ -26,14 +26,22 @@ async def get_latest_plan(db: AsyncSession) -> Optional[PlanRecord]:
 
 
 async def save_plan(db: AsyncSession, plan: PlanRecordSchema) -> PlanRecord:
-    data = plan.model_dump(by_alias=False)
+    # Serialize sessions with camelCase aliases so the frontend receives them correctly
+    sessions_json = [
+        s.model_dump(by_alias=True) if hasattr(s, "model_dump") else s
+        for s in plan.sessions
+    ]
+    suggestions_json = [
+        s.model_dump(by_alias=True) if hasattr(s, "model_dump") else s
+        for s in plan.suggestions
+    ]
     record = PlanRecord(
-        id=data.get("id") or str(uuid.uuid4()),
-        plan_version=data["plan_version"],
-        sessions=data["sessions"],
-        unscheduled_tasks=data["unscheduled_tasks"],
-        suggestions=data["suggestions"],
-        generated_at=data["generated_at"],
+        id=plan.id or str(uuid.uuid4()),
+        plan_version=plan.plan_version,
+        sessions=sessions_json,
+        unscheduled_tasks=plan.unscheduled_tasks,
+        suggestions=suggestions_json,
+        generated_at=plan.generated_at,
         created_at=datetime.utcnow(),
     )
     db.add(record)

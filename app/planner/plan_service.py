@@ -1,7 +1,7 @@
 """Port of planService.ts — orchestrate planner with feedback tuning."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -117,7 +117,7 @@ async def rebuild_plan(db: AsyncSession) -> Optional[PlanRecordSchema]:
         free_slots=free_slots,
         habits=habits,
         settings=settings,
-        now_iso=datetime.utcnow().isoformat(),
+        now_iso=datetime.now(timezone.utc).isoformat(),
         previous_plan_version=latest_plan.plan_version if latest_plan else None,
     )
 

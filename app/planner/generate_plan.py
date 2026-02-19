@@ -54,6 +54,14 @@ def _diff_minutes(a: datetime, b: datetime) -> int:
     return int((b - a).total_seconds() // 60)
 
 
+def _as_vn_aware(iso: str) -> datetime:
+    """Normalize any ISO datetime string to a timezone-aware datetime in UTC+7."""
+    dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(TZ_OFFSET)
+
+
 def _add_minutes(dt: datetime, minutes: int) -> datetime:
     return dt + timedelta(minutes=minutes)
 
@@ -118,7 +126,7 @@ def _prioritize_tasks(tasks: list[TaskSchema]) -> list[TaskSchema]:
     return sorted(
         tasks,
         key=lambda t: (
-            datetime.fromisoformat(t.deadline).timestamp(),
+            _as_vn_aware(t.deadline).timestamp(),
             -(t.importance or 0),
             -t.difficulty,
             -t.estimated_minutes,
@@ -315,18 +323,18 @@ def generate_plan(
     now_iso: str,
     previous_plan_version: Optional[int] = None,
 ) -> PlanRecordSchema:
-    now = datetime.fromisoformat(now_iso)
+    now = _as_vn_aware(now_iso)
     cleaned = clean_slots(free_slots)
     clean_slot_list: list[FreeSlotSchema] = cleaned["slots"]
     warnings: list[str] = cleaned["warnings"]
     plan_version = (previous_plan_version or 0) + 1
 
-    future_tasks = [t for t in tasks if datetime.fromisoformat(t.deadline) > now]
+    future_tasks = [t for t in tasks if _as_vn_aware(t.deadline) > now]
     prioritized = _prioritize_tasks(future_tasks)
 
     latest_deadline = now
     for task in prioritized:
-        dl = datetime.fromisoformat(task.deadline)
+        dl = _as_vn_aware(task.deadline)
         if dl > latest_deadline:
             latest_deadline = dl
 
@@ -365,7 +373,7 @@ def generate_plan(
 
     for task in prioritized:
         remaining = max(0, task.estimated_minutes - task.progress_minutes)
-        deadline = datetime.fromisoformat(task.deadline)
+        deadline = _as_vn_aware(task.deadline)
         eligible_buckets = [
             b
             for b in buckets

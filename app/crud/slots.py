@@ -28,7 +28,7 @@ def _calc_capacity(start: str, end: str) -> int:
 
 
 async def create_slot(db: AsyncSession, payload: FreeSlotCreate) -> FreeSlot:
-    data = payload.model_dump(by_alias=False)
+    data = payload.model_dump(by_alias=False, exclude={"capacity_minutes"})
     capacity = _calc_capacity(data["start_time"], data["end_time"])
     if capacity <= 0:
         raise ValueError("Giờ kết thúc phải sau giờ bắt đầu")
