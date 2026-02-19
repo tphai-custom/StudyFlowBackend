@@ -40,16 +40,13 @@ def list_library(
     db: Session = Depends(get_db),
 ):
     query = db.query(LibraryItemModel)
-    items = query.all()
     if subject:
-        items = [i for i in items if i.subject.lower() == subject.lower()]
+        query = query.filter(LibraryItemModel.subject.ilike(subject))
     if q:
-        q_lower = q.lower()
-        items = [
-            i for i in items
-            if q_lower in i.title.lower() or q_lower in i.summary.lower()
-        ]
-    return [item_to_dict(i) for i in items]
+        query = query.filter(
+            LibraryItemModel.title.ilike(f"%{q}%") | LibraryItemModel.summary.ilike(f"%{q}%")
+        )
+    return [item_to_dict(i) for i in query.all()]
 
 
 @router.post("/", status_code=201)
