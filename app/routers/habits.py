@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import habits as crud
+from app.crud import plan as plan_crud
 from app.database import get_db
 from app.schemas.habit import HabitCreate, HabitSchema
 
@@ -31,3 +32,4 @@ async def delete_habit(habit_id: str, db: AsyncSession = Depends(get_db)):
     deleted = await crud.delete_habit(db, habit_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Habit not found")
+    await plan_crud.remove_habit_from_plans(db, habit_id)

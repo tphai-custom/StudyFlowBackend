@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.crud import tasks as crud
+from app.crud import plan as plan_crud
 from app.database import get_db
 from app.schemas.task import TaskCreate, TaskSchema, TaskUpdate
 
@@ -40,6 +41,7 @@ async def delete_task(task_id: str, db: AsyncSession = Depends(get_db)):
     deleted = await crud.delete_task(db, task_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Task not found")
+    await plan_crud.remove_task_from_plans(db, task_id)
 
 
 @router.patch("/{task_id}/progress", response_model=TaskSchema)

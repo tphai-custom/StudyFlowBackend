@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     sync_database_url: str
     db_host: str = "localhost"
     db_port: int = 5432
-    db_name: str = "studyflow"
+    db_name: str = "studyflowdb"
     db_user: str = "postgres"
     db_password: str
 
