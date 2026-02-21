@@ -1,6 +1,7 @@
 """Port of generatePlan.ts — core scheduling algorithm."""
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -377,7 +378,7 @@ def generate_plan(
         eligible_buckets = [
             b
             for b in buckets
-            if datetime.fromisoformat(f"{b.iso_date}T23:59:00+07:00") <= deadline
+            if b.iso_date <= deadline.strftime("%Y-%m-%d")
         ]
         if not eligible_buckets:
             unscheduled.append(task)
@@ -477,6 +478,35 @@ def generate_plan(
 
     sessions_with_breaks = _apply_breaks(sessions, settings, plan_version)
     generated_at = datetime.utcnow().isoformat()
+
+    # ------------------------------------------------------------------
+    # Deduplicate suggestions
+    # ------------------------------------------------------------------
+    # Group per-day habit failures into a single summary line
+    habit_fail_counts: dict[str, int] = {}
+    other_suggestions: list[PlanSuggestionSchema] = []
+    for s in suggestions:
+        m = re.match(r'Không đủ slot cho habit "(.+)" vào .+\.', s.message)
+        if m:
+            habit_name = m.group(1)
+            habit_fail_counts[habit_name] = habit_fail_counts.get(habit_name, 0) + 1
+        else:
+            other_suggestions.append(s)
+
+    seen_msgs: set[str] = set()
+    deduped: list[PlanSuggestionSchema] = []
+    for s in other_suggestions:
+        if s.message not in seen_msgs:
+            seen_msgs.add(s.message)
+            deduped.append(s)
+    for habit_name, count in habit_fail_counts.items():
+        deduped.append(
+            PlanSuggestionSchema(
+                type="increase_free_time",
+                message=f'Habit "{habit_name}" không có slot trong {count} ngày. Hãy thêm thời gian rảnh.',
+            )
+        )
+    suggestions = deduped
 
     return PlanRecordSchema(
         id=str(uuid.uuid4()),

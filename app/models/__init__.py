@@ -10,8 +10,9 @@ from app.models.feedback import Feedback
 from app.models.settings import AppSettings
 from app.models.profile import UserProfile
 from app.models.library import LibraryItem
+from app.models.import_draft import ImportDraft
 
 __all__ = [
     "Task", "Habit", "FreeSlot", "PlanRecord",
-    "Feedback", "AppSettings", "UserProfile", "LibraryItem",
+    "Feedback", "AppSettings", "UserProfile", "LibraryItem", "ImportDraft",
 ]
