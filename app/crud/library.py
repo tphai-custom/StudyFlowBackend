@@ -10,15 +10,24 @@ from app.models.library import LibraryItem
 from app.schemas.library import LibraryItemCreate
 
 
-async def list_library(db: AsyncSession) -> list[LibraryItem]:
-    result = await db.execute(select(LibraryItem).order_by(LibraryItem.subject, LibraryItem.title))
+async def list_library(db: AsyncSession, owner_user_id: str) -> list[LibraryItem]:
+    """Return system-shared items (owner_user_id IS NULL) + user's own items."""
+    from sqlalchemy import or_, null
+    result = await db.execute(
+        select(LibraryItem)
+        .where(or_(LibraryItem.owner_user_id == None, LibraryItem.owner_user_id == owner_user_id))  # noqa: E711
+        .order_by(LibraryItem.subject, LibraryItem.title)
+    )
     return list(result.scalars().all())
 
 
 async def search_library(
-    db: AsyncSession, query: Optional[str] = None, subject: Optional[str] = None
+    db: AsyncSession, owner_user_id: str, query: Optional[str] = None, subject: Optional[str] = None
 ) -> list[LibraryItem]:
-    stmt = select(LibraryItem)
+    from sqlalchemy import or_
+    stmt = select(LibraryItem).where(
+        or_(LibraryItem.owner_user_id == None, LibraryItem.owner_user_id == owner_user_id)  # noqa: E711
+    )
     items = (await db.execute(stmt)).scalars().all()
     results = []
     for item in items:
@@ -31,11 +40,11 @@ async def search_library(
     return results
 
 
-async def save_library_items(db: AsyncSession, items: list[LibraryItemCreate]) -> list[LibraryItem]:
+async def save_library_items(db: AsyncSession, items: list[LibraryItemCreate], owner_user_id: Optional[str] = None) -> list[LibraryItem]:
     saved = []
     for payload in items:
         data = payload.model_dump()
-        item = LibraryItem(id=str(uuid.uuid4()), **data)
+        item = LibraryItem(id=str(uuid.uuid4()), **data, owner_user_id=owner_user_id)
         db.add(item)
         saved.append(item)
     await db.flush()

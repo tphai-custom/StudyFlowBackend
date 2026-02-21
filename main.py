@@ -7,6 +7,9 @@ from app.config import settings
 from app.database import init_db
 from app.routers import tasks, habits, slots, plan, feedback, settings as settings_router, profile, library, reset, metrics
 from app.routers import import_draft
+from app.routers import auth
+from app.routers import parent as parent_router
+from app.routers import admin as admin_router
 
 
 @asynccontextmanager
@@ -25,7 +28,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -43,6 +46,9 @@ app.include_router(library.router, prefix="/api/v1")
 app.include_router(reset.router, prefix="/api/v1")
 app.include_router(metrics.router, prefix="/api/v1")
 app.include_router(import_draft.router, prefix="/api/v1")
+app.include_router(auth.router, prefix="/api/v1")
+app.include_router(parent_router.router, prefix="/api/v1")
+app.include_router(admin_router.router, prefix="/api/v1")
 
 
 @app.get("/")

@@ -11,8 +11,12 @@ from app.models.free_slot import FreeSlot
 from app.schemas.free_slot import FreeSlotCreate
 
 
-async def list_slots(db: AsyncSession) -> list[FreeSlot]:
-    result = await db.execute(select(FreeSlot).order_by(FreeSlot.weekday, FreeSlot.start_time))
+async def list_slots(db: AsyncSession, owner_user_id: str) -> list[FreeSlot]:
+    result = await db.execute(
+        select(FreeSlot)
+        .where(FreeSlot.owner_user_id == owner_user_id)
+        .order_by(FreeSlot.weekday, FreeSlot.start_time)
+    )
     return list(result.scalars().all())
 
 
@@ -27,7 +31,7 @@ def _calc_capacity(start: str, end: str) -> int:
     return (eh * 60 + em) - (sh * 60 + sm)
 
 
-async def create_slot(db: AsyncSession, payload: FreeSlotCreate) -> FreeSlot:
+async def create_slot(db: AsyncSession, payload: FreeSlotCreate, owner_user_id: str) -> FreeSlot:
     data = payload.model_dump(by_alias=False, exclude={"capacity_minutes"})
     capacity = _calc_capacity(data["start_time"], data["end_time"])
     if capacity <= 0:
@@ -35,6 +39,7 @@ async def create_slot(db: AsyncSession, payload: FreeSlotCreate) -> FreeSlot:
     slot = FreeSlot(
         id=str(uuid.uuid4()),
         **data,
+        owner_user_id=owner_user_id,
         capacity_minutes=capacity,
         created_at=datetime.utcnow(),
     )

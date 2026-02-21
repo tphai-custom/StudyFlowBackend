@@ -70,9 +70,9 @@ def _model_to_habit(h) -> HabitSchema:
     )
 
 
-async def _tune_settings_with_feedback(db: AsyncSession) -> AppSettingsSchema:
+async def _tune_settings_with_feedback(db: AsyncSession, owner_user_id: str) -> AppSettingsSchema:
     settings_row = await settings_crud.get_settings(db)
-    feedback_list = await feedback_crud.list_feedback(db)
+    feedback_list = await feedback_crud.list_feedback(db, owner_user_id)
 
     settings = AppSettingsSchema(
         id=settings_row.id,
@@ -97,16 +97,16 @@ async def _tune_settings_with_feedback(db: AsyncSession) -> AppSettingsSchema:
     return settings
 
 
-async def rebuild_plan(db: AsyncSession) -> Optional[PlanRecordSchema]:
-    tasks_rows = await tasks_crud.list_tasks(db)
-    slots_rows = await slots_crud.list_slots(db)
+async def rebuild_plan(db: AsyncSession, owner_user_id: str) -> Optional[PlanRecordSchema]:
+    tasks_rows = await tasks_crud.list_tasks(db, owner_user_id)
+    slots_rows = await slots_crud.list_slots(db, owner_user_id)
 
     if not tasks_rows or not slots_rows:
         return None
 
-    habits_rows = await habits_crud.list_habits(db)
-    settings = await _tune_settings_with_feedback(db)
-    latest_plan = await plan_crud.get_latest_plan(db)
+    habits_rows = await habits_crud.list_habits(db, owner_user_id)
+    settings = await _tune_settings_with_feedback(db, owner_user_id)
+    latest_plan = await plan_crud.get_latest_plan(db, owner_user_id)
 
     tasks = [_model_to_task(t) for t in tasks_rows]
     free_slots = [_model_to_slot(s) for s in slots_rows]
@@ -120,6 +120,7 @@ async def rebuild_plan(db: AsyncSession) -> Optional[PlanRecordSchema]:
         now_iso=datetime.now(timezone.utc).isoformat(),
         previous_plan_version=latest_plan.plan_version if latest_plan else None,
     )
+    plan.owner_user_id = owner_user_id
 
     await plan_crud.save_plan(db, plan)
     return plan

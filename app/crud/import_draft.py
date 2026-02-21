@@ -11,8 +11,8 @@ from app.models.import_draft import ImportDraft
 from app.schemas.import_draft import ImportDraftCreate, ImportDraftUpdate
 
 
-async def list_drafts(db: AsyncSession, draft_type: Optional[str] = None) -> list[ImportDraft]:
-    query = select(ImportDraft).order_by(ImportDraft.created_at.desc())
+async def list_drafts(db: AsyncSession, owner_user_id: str, draft_type: Optional[str] = None) -> list[ImportDraft]:
+    query = select(ImportDraft).where(ImportDraft.owner_user_id == owner_user_id).order_by(ImportDraft.created_at.desc())
     if draft_type:
         query = query.where(ImportDraft.draft_type == draft_type)
     result = await db.execute(query)
@@ -24,7 +24,7 @@ async def get_draft(db: AsyncSession, draft_id: str) -> Optional[ImportDraft]:
     return result.scalar_one_or_none()
 
 
-async def create_draft(db: AsyncSession, payload: ImportDraftCreate) -> ImportDraft:
+async def create_draft(db: AsyncSession, payload: ImportDraftCreate, owner_user_id: str) -> ImportDraft:
     items_json = [item.model_dump() for item in payload.items]
     draft = ImportDraft(
         id=str(uuid.uuid4()),
@@ -33,6 +33,7 @@ async def create_draft(db: AsyncSession, payload: ImportDraftCreate) -> ImportDr
         name=payload.name,
         description=payload.description,
         items=items_json,
+        owner_user_id=owner_user_id,
         status="draft",
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),

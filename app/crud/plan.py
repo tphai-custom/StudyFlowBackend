@@ -23,16 +23,22 @@ def _to_json_safe(obj: Any) -> Any:
     return obj
 
 
-async def get_plan_history(db: AsyncSession, limit: int = 5) -> list[PlanRecord]:
+async def get_plan_history(db: AsyncSession, owner_user_id: str, limit: int = 5) -> list[PlanRecord]:
     result = await db.execute(
-        select(PlanRecord).order_by(PlanRecord.created_at).limit(limit)
+        select(PlanRecord)
+        .where(PlanRecord.owner_user_id == owner_user_id)
+        .order_by(PlanRecord.created_at)
+        .limit(limit)
     )
     return list(result.scalars().all())
 
 
-async def get_latest_plan(db: AsyncSession) -> Optional[PlanRecord]:
+async def get_latest_plan(db: AsyncSession, owner_user_id: str) -> Optional[PlanRecord]:
     result = await db.execute(
-        select(PlanRecord).order_by(PlanRecord.created_at.desc()).limit(1)
+        select(PlanRecord)
+        .where(PlanRecord.owner_user_id == owner_user_id)
+        .order_by(PlanRecord.created_at.desc())
+        .limit(1)
     )
     return result.scalar_one_or_none()
 
@@ -56,6 +62,7 @@ async def save_plan(db: AsyncSession, plan: PlanRecordSchema) -> PlanRecord:
         unscheduled_tasks=_to_json_safe(plan.unscheduled_tasks),
         suggestions=suggestions_json,
         generated_at=plan.generated_at,
+        owner_user_id=plan.owner_user_id,
         created_at=datetime.utcnow(),
     )
     db.add(record)
@@ -63,9 +70,9 @@ async def save_plan(db: AsyncSession, plan: PlanRecordSchema) -> PlanRecord:
     return record
 
 
-async def remove_habit_from_plans(db: AsyncSession, habit_id: str) -> None:
+async def remove_habit_from_plans(db: AsyncSession, habit_id: str, owner_user_id: str) -> None:
     """Remove all sessions referencing *habit_id* from every stored plan record."""
-    result = await db.execute(select(PlanRecord))
+    result = await db.execute(select(PlanRecord).where(PlanRecord.owner_user_id == owner_user_id))
     records: list[PlanRecord] = list(result.scalars().all())
     for record in records:
         new_sessions = [
@@ -77,10 +84,10 @@ async def remove_habit_from_plans(db: AsyncSession, habit_id: str) -> None:
     await db.flush()
 
 
-async def remove_task_from_plans(db: AsyncSession, task_id: str) -> None:
+async def remove_task_from_plans(db: AsyncSession, task_id: str, owner_user_id: str) -> None:
     """Remove all sessions and unscheduled_task entries referencing *task_id*
     from every stored plan record."""
-    result = await db.execute(select(PlanRecord))
+    result = await db.execute(select(PlanRecord).where(PlanRecord.owner_user_id == owner_user_id))
     records: list[PlanRecord] = list(result.scalars().all())
     for record in records:
         new_sessions = [
@@ -98,9 +105,9 @@ async def remove_task_from_plans(db: AsyncSession, task_id: str) -> None:
 
 
 async def update_session_status(
-    db: AsyncSession, session_id: str, status: str
+    db: AsyncSession, session_id: str, status: str, owner_user_id: str
 ) -> Optional[PlanRecord]:
-    plan = await get_latest_plan(db)
+    plan = await get_latest_plan(db, owner_user_id)
     if plan is None:
         return None
     sessions = list(plan.sessions)

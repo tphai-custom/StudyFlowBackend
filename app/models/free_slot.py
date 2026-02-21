@@ -18,6 +18,7 @@ class FreeSlot(Base):
     end_time: Mapped[str] = mapped_column(String, nullable=False)  # HH:mm
     capacity_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     source: Mapped[str] = mapped_column(String, default="user")
+    owner_user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

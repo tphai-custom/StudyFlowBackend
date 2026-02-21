@@ -20,6 +20,7 @@ class Habit(Base):
     preset: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     preferred_start: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     energy_window: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    owner_user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

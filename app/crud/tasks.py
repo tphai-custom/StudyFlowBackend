@@ -11,8 +11,10 @@ from app.models.task import Task
 from app.schemas.task import TaskCreate, TaskUpdate
 
 
-async def list_tasks(db: AsyncSession) -> list[Task]:
-    result = await db.execute(select(Task).order_by(Task.created_at))
+async def list_tasks(db: AsyncSession, owner_user_id: str) -> list[Task]:
+    result = await db.execute(
+        select(Task).where(Task.owner_user_id == owner_user_id).order_by(Task.created_at)
+    )
     return list(result.scalars().all())
 
 
@@ -21,11 +23,12 @@ async def get_task(db: AsyncSession, task_id: str) -> Optional[Task]:
     return result.scalar_one_or_none()
 
 
-async def create_task(db: AsyncSession, payload: TaskCreate) -> Task:
+async def create_task(db: AsyncSession, payload: TaskCreate, owner_user_id: str) -> Task:
     data = payload.model_dump(by_alias=False)
     task = Task(
         id=str(uuid.uuid4()),
         **data,
+        owner_user_id=owner_user_id,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
         progress_minutes=0,

@@ -22,6 +22,7 @@ class ImportDraft(Base):
     items: Mapped[list] = mapped_column(JSONB, default=list)
     # "draft" | "finalized"
     status: Mapped[str] = mapped_column(String, nullable=False, default="draft")
+    owner_user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

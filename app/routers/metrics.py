@@ -7,11 +7,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.deps import get_current_user
 from app.crud import plan as plan_crud
 from app.crud import settings as settings_crud
 from app.crud import slots as slots_crud
 from app.crud import tasks as tasks_crud
 from app.database import get_db
+from app.models.user import User
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
 
@@ -109,14 +111,15 @@ async def get_plan_metrics(
     range: str = Query(default="week", pattern="^(day|week|month)$"),
     date: Optional[str] = Query(default=None, description="YYYY-MM-DD anchor date"),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Return completion rate, feasibility score + reasons for the given range."""
     range_start, range_end = _parse_date_range(range, date)
 
-    plan = await plan_crud.get_latest_plan(db)
+    plan = await plan_crud.get_latest_plan(db, current_user.id)
     settings_row = await settings_crud.get_settings(db)
-    slots_rows = await slots_crud.list_slots(db)
-    tasks_rows = await tasks_crud.list_tasks(db)
+    slots_rows = await slots_crud.list_slots(db, current_user.id)
+    tasks_rows = await tasks_crud.list_tasks(db, current_user.id)
 
     if plan is None:
         return {

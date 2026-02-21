@@ -18,6 +18,7 @@ class PlanRecord(Base):
     unscheduled_tasks: Mapped[list] = mapped_column(JSONB, default=list)
     suggestions: Mapped[list] = mapped_column(JSONB, default=list)
     generated_at: Mapped[str] = mapped_column(String, nullable=False)
+    owner_user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

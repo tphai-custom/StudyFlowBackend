@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     debug: bool = True
     app_version: str = "0.1.0"
 
+    jwt_secret_key: str = "studyflow-super-secret-change-in-production-2026"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 60 * 24 * 7  # 7 days
+
     class Config:
         env_file = ".env"
         case_sensitive = False

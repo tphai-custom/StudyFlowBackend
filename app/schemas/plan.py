@@ -50,5 +50,6 @@ class PlanRecordSchema(BaseModel):
     unscheduled_tasks: list = Field(alias="unscheduledTasks", default_factory=list)
     suggestions: list[PlanSuggestionSchema] = Field(default_factory=list)
     generated_at: str = Field(alias="generatedAt")
+    owner_user_id: Optional[str] = None
 
     model_config = {"populate_by_name": True, "from_attributes": True, "serialize_by_alias": True}

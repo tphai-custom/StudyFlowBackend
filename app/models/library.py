@@ -19,3 +19,5 @@ class LibraryItem(Base):
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     tags: Mapped[list] = mapped_column(JSONB, default=list)
+    # NULL = system-shared content; set to user id for user-created items
+    owner_user_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)

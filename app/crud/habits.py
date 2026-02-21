@@ -11,8 +11,10 @@ from app.models.habit import Habit
 from app.schemas.habit import HabitCreate
 
 
-async def list_habits(db: AsyncSession) -> list[Habit]:
-    result = await db.execute(select(Habit).order_by(Habit.created_at))
+async def list_habits(db: AsyncSession, owner_user_id: str) -> list[Habit]:
+    result = await db.execute(
+        select(Habit).where(Habit.owner_user_id == owner_user_id).order_by(Habit.created_at)
+    )
     return list(result.scalars().all())
 
 
@@ -21,11 +23,12 @@ async def get_habit(db: AsyncSession, habit_id: str) -> Optional[Habit]:
     return result.scalar_one_or_none()
 
 
-async def create_habit(db: AsyncSession, payload: HabitCreate) -> Habit:
+async def create_habit(db: AsyncSession, payload: HabitCreate, owner_user_id: str) -> Habit:
     data = payload.model_dump(by_alias=False)
     habit = Habit(
         id=str(uuid.uuid4()),
         **data,
+        owner_user_id=owner_user_id,
         created_at=datetime.utcnow(),
     )
     db.add(habit)
