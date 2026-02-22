@@ -12,11 +12,11 @@ from app.models.profile import UserProfile
 from app.models.library import LibraryItem
 from app.models.import_draft import ImportDraft
 from app.models.user import User
-from app.models.parent import ParentStudentLink, ParentSuggestion
+from app.models.parent import ParentStudentLink, ParentSuggestion, ParentNote
 from app.models.plan_override import PlanOverride
 
 __all__ = [
     "Task", "Habit", "FreeSlot", "PlanRecord",
     "Feedback", "AppSettings", "UserProfile", "LibraryItem", "ImportDraft",
-    "User", "ParentStudentLink", "ParentSuggestion", "PlanOverride",
+    "User", "ParentStudentLink", "ParentSuggestion", "ParentNote", "PlanOverride",
 ]

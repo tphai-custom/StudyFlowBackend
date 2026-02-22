@@ -124,3 +124,45 @@ async def rebuild_plan(db: AsyncSession, owner_user_id: str) -> Optional[PlanRec
 
     await plan_crud.save_plan(db, plan)
     return plan
+
+
+async def rebuild_plan_partial(db: AsyncSession, owner_user_id: str) -> Optional[PlanRecordSchema]:
+    """Rebuild only unlocked-pending sessions, preserving locked and done/skipped ones."""
+    latest_plan = await plan_crud.get_latest_plan(db, owner_user_id)
+    locked_sessions = []
+    if latest_plan:
+        locked_sessions = [
+            s for s in (latest_plan.sessions or [])
+            if s.get("locked") or s.get("status") in ("done", "skipped")
+        ]
+
+    tasks_rows = await tasks_crud.list_tasks(db, owner_user_id)
+    slots_rows = await slots_crud.list_slots(db, owner_user_id)
+    if not tasks_rows or not slots_rows:
+        return None
+
+    habits_rows = await habits_crud.list_habits(db, owner_user_id)
+    settings = await _tune_settings_with_feedback(db, owner_user_id)
+
+    tasks = [_model_to_task(t) for t in tasks_rows]
+    free_slots = [_model_to_slot(s) for s in slots_rows]
+    habits = [_model_to_habit(h) for h in habits_rows]
+
+    new_plan = generate_plan(
+        tasks=tasks,
+        free_slots=free_slots,
+        habits=habits,
+        settings=settings,
+        now_iso=datetime.now(timezone.utc).isoformat(),
+        previous_plan_version=latest_plan.plan_version if latest_plan else None,
+    )
+    new_plan.owner_user_id = owner_user_id
+    # Merge: locked sessions first, then new unlocked sessions
+    merged_sessions = locked_sessions + [
+        s for s in new_plan.sessions
+        if not any(ls.get("id") == (s.get("id") if isinstance(s, dict) else s.id) for ls in locked_sessions)
+    ]
+    new_plan.sessions = merged_sessions
+
+    await plan_crud.save_plan(db, new_plan)
+    return new_plan

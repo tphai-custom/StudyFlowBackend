@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel
 
@@ -48,3 +48,64 @@ class SuggestionSchema(BaseModel):
 
 class SuggestionStatusUpdate(BaseModel):
     status: str  # accepted | rejected
+
+
+class LinkedStudentSchema(BaseModel):
+    """Enriched link record sent to the parent sidebar."""
+    student_id: str
+    username: str
+    full_name: str
+    linked_at: datetime
+
+
+# ---- Weekly summary ----
+
+class UpcomingDeadline(BaseModel):
+    task_id: str
+    title: str
+    subject: str
+    deadline: str
+    days_left: int
+
+
+class WeeklySummary(BaseModel):
+    student_id: str
+    week: str  # YYYY-WW
+    total_minutes: int
+    completion_rate: float  # 0-100
+    upcoming_deadlines: List[UpcomingDeadline]
+    alerts: List[str]
+    total_sessions: int
+    done_sessions: int
+    free_slot_minutes: int
+    planned_minutes: int
+
+
+# ---- Parent notes (P1 journal) ----
+
+class NoteCreate(BaseModel):
+    message: str
+    tag: Optional[str] = "general"  # encourage | deadline | praise | update | general
+
+
+class NoteSchema(BaseModel):
+    id: str
+    parent_id: str
+    student_id: str
+    message: str
+    tag: str
+    reaction: Optional[str] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class NoteReaction(BaseModel):
+    reaction: str  # 👍 | ok | khó quá | con đang làm
+
+
+# ---- Nudge settings ----
+
+class NudgeSettings(BaseModel):
+    remind_hour: int = 20   # 0-23
+    tone: str = "medium"    # light | medium | strict

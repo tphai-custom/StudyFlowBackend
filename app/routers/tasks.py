@@ -62,6 +62,12 @@ async def delete_task(
     task = await crud.get_task(db, task_id)
     if not task or task.owner_user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Task not found")
+    # Students cannot delete tasks locked by a parent
+    if task.locked_by_parent and current_user.role == "student":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Nhiệm vụ này do phụ huynh giao và đã bị khoá. Học sinh không thể xoá.",
+        )
     await crud.delete_task(db, task_id)
     await plan_crud.remove_task_from_plans(db, task_id, current_user.id)
 

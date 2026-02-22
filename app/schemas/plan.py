@@ -19,6 +19,7 @@ class SessionSchema(BaseModel):
     minutes: int
     buffer_minutes: int = Field(alias="bufferMinutes", default=0)
     status: Literal["pending", "done", "skipped"] = "pending"
+    locked: bool = False
     checklist: Optional[list[str]] = None
     success_criteria: Optional[list[str]] = Field(alias="successCriteria", default=None)
     milestone_title: Optional[str] = Field(alias="milestoneTitle", default=None)

@@ -1,11 +1,9 @@
-"""Router: parent–student linking, child data view, and suggestions.
-
-Requires role=parent for most endpoints. Students use a few endpoints
-(incoming-links, respond to link requests, review suggestions).
-"""
+"""Router: parent–student linking, child data view, suggestions, notes, weekly summary."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user, require_role
@@ -20,9 +18,15 @@ from app.schemas.parent import (
     LinkRequest,
     LinkSchema,
     LinkStatusUpdate,
+    LinkedStudentSchema,
+    NoteCreate,
+    NoteReaction,
+    NoteSchema,
+    NudgeSettings,
     SuggestionCreate,
     SuggestionSchema,
     SuggestionStatusUpdate,
+    WeeklySummary,
 )
 
 router = APIRouter(prefix="/parent", tags=["parent"])
@@ -84,6 +88,24 @@ async def list_children(
 ):
     """List students with active links."""
     return await crud.list_links_for_parent(db, current_user.id, status="active")
+
+
+@router.get("/linked-students", response_model=list[LinkedStudentSchema])
+async def linked_students(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("parent")),
+):
+    """Return enriched student info (name, username) for all linked students."""
+    students = await crud.get_linked_students(db, current_user.id)
+    return [
+        LinkedStudentSchema(
+            student_id=s.student_id,
+            username=s.username,
+            full_name=s.full_name,
+            linked_at=s.linked_at,
+        )
+        for s in students
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -212,3 +234,227 @@ async def respond_to_suggestion(
         raise HTTPException(status_code=404, detail="Không tìm thấy gợi ý")
     await db.commit()
     return suggestion
+
+
+# ---------------------------------------------------------------------------
+# Weekly summary
+# ---------------------------------------------------------------------------
+
+@router.get("/students/{student_id}/weekly-summary", response_model=WeeklySummary)
+async def child_weekly_summary(
+    student_id: str,
+    week: Optional[str] = Query(default=None, description="YYYY-WW, e.g. 2026-W08"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("parent")),
+):
+    """Return weekly progress summary for a linked student."""
+    await _require_active_link(db, current_user.id, student_id)
+    return await crud.get_weekly_summary(db, student_id, week)
+
+
+# ---------------------------------------------------------------------------
+# Enriched child data (tasks/plan/stats with filter)
+# ---------------------------------------------------------------------------
+
+@router.get("/students/{student_id}/tasks")
+async def get_student_tasks(
+    student_id: str,
+    filter: Optional[str] = Query(default=None, description="deadline|important|incomplete"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("parent")),
+):
+    """Return tasks for a linked student, with optional filter."""
+    await _require_active_link(db, current_user.id, student_id)
+    tasks = await tasks_crud.list_tasks(db, student_id)
+    from datetime import datetime, timezone
+    now = datetime.now(tz=timezone.utc)
+    if filter == "deadline":
+        tasks = sorted(tasks, key=lambda t: t.deadline)
+    elif filter == "important":
+        tasks = [t for t in tasks if (t.importance or 0) >= 2]
+    elif filter == "incomplete":
+        tasks = [t for t in tasks if (t.progress_minutes or 0) < (t.estimated_minutes or 1)]
+    return tasks
+
+
+@router.get("/students/{student_id}/plan")
+async def get_student_plan(
+    student_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("parent")),
+):
+    """Return latest plan for a linked student."""
+    await _require_active_link(db, current_user.id, student_id)
+    plan = await plan_crud.get_latest_plan(db, student_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Chưa có kế hoạch")
+    return plan
+
+
+@router.get("/students/{student_id}/stats")
+async def get_student_stats(
+    student_id: str,
+    range: Optional[str] = Query(default="week", description="week|month"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("parent")),
+):
+    """Return learning stats for a linked student."""
+    await _require_active_link(db, current_user.id, student_id)
+    from datetime import datetime, timedelta, timezone
+    from app.models.plan import PlanRecord
+    from sqlalchemy import select
+
+    now = datetime.now(tz=timezone.utc)
+    if range == "month":
+        since = now - timedelta(days=30)
+    else:
+        since = now - timedelta(days=7)
+
+    plan_result = await db.execute(
+        select(PlanRecord)
+        .where(PlanRecord.owner_user_id == student_id)
+        .order_by(PlanRecord.created_at.desc())
+        .limit(1)
+    )
+    plan = plan_result.scalar_one_or_none()
+    if not plan:
+        return {"total_minutes": 0, "completion_rate": 0, "top_subject": None, "sessions_done": 0}
+
+    sessions = plan.sessions or []
+    total = 0
+    done = 0
+    subject_minutes: dict = {}
+    for s in sessions:
+        ps = s.get("plannedStart") or s.get("planned_start", "")
+        try:
+            dt = datetime.fromisoformat(ps.replace("Z", "+00:00"))
+            if dt >= since:
+                mins = s.get("minutes", 0)
+                total += mins
+                if s.get("status") == "done":
+                    done += mins
+                    subj = s.get("subject", "")
+                    subject_minutes[subj] = subject_minutes.get(subj, 0) + mins
+        except Exception:
+            pass
+
+    top_subject = max(subject_minutes, key=lambda k: subject_minutes[k]) if subject_minutes else None
+    completion_rate = round((done / total * 100) if total else 0, 1)
+
+    return {
+        "total_minutes": total,
+        "completion_rate": completion_rate,
+        "top_subject": top_subject,
+        "sessions_done": done,
+        "range": range,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Nudge messages (smart suggestions)
+# ---------------------------------------------------------------------------
+
+@router.get("/students/{student_id}/nudges")
+async def get_nudges(
+    student_id: str,
+    tone: str = Query(default="medium", description="light|medium|strict"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("parent")),
+):
+    """Return contextual nudge message templates based on current student state."""
+    await _require_active_link(db, current_user.id, student_id)
+    summary = await crud.get_weekly_summary(db, student_id)
+
+    from app.models.user import User as UserModel
+    from sqlalchemy import select
+    student_result = await db.execute(select(UserModel).where(UserModel.id == student_id))
+    student = student_result.scalar_one_or_none()
+    name = student.first_name if student else "con"
+
+    messages = []
+
+    # Behind schedule
+    if summary.completion_rate < 50 and summary.total_sessions > 0:
+        if tone == "light":
+            messages.append({"situation": "behind", "text": f"{name} ơi, tuần này mình cố gắng thêm một chút nhé 💪"})
+        elif tone == "medium":
+            messages.append({"situation": "behind", "text": f"{name} ơi, tiến độ tuần này mới được {summary.completion_rate:.0f}%. Tối nay mình làm thêm 1 phiên 45' nha?"})
+        else:
+            messages.append({"situation": "behind", "text": f"{name}, hoàn thành {summary.completion_rate:.0f}% là chưa đủ. Cần bắt kịp ngay hôm nay!"})
+
+    # Upcoming deadline
+    if summary.upcoming_deadlines:
+        d = summary.upcoming_deadlines[0]
+        if d.days_left <= 2:
+            messages.append({"situation": "deadline", "text": f"Deadline {d.subject} còn {d.days_left} ngày, {name} muốn mình giúp chia nhỏ không?"})
+        else:
+            messages.append({"situation": "deadline", "text": f"{name} nhớ ôn {d.subject} nha, còn {d.days_left} ngày là đến deadline rồi đó."})
+
+    # No plan
+    if "Kế hoạch chưa được tạo" in summary.alerts:
+        messages.append({"situation": "no_plan", "text": f"{name} ơi, mình vào StudyFlow tạo kế hoạch tuần này chưa? Ba/mẹ chờ xem nha 😊"})
+
+    # No slots
+    if "Tuần này chưa có slot rảnh" in summary.alerts:
+        messages.append({"situation": "no_slots", "text": f"{name} nhớ cập nhật thời gian rảnh trong StudyFlow để hệ thống sắp lịch giúp nha."})
+
+    # Doing well
+    if summary.completion_rate >= 80:
+        messages.append({"situation": "praise", "text": f"Tuần này {name} làm tốt lắm ({summary.completion_rate:.0f}%)! Mình giữ streak nhé! 🌟"})
+
+    # Default
+    if not messages:
+        messages.append({"situation": "general", "text": f"{name} ơi, có cần ba/mẹ giúp gì không? Học tốt nhá!"})
+
+    return {"student_name": name, "tone": tone, "messages": messages, "summary": summary}
+
+
+# ---------------------------------------------------------------------------
+# Parent Notes (journal) — P1
+# ---------------------------------------------------------------------------
+
+@router.post("/students/{student_id}/notes", response_model=NoteSchema, status_code=status.HTTP_201_CREATED)
+async def create_note(
+    student_id: str,
+    payload: NoteCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("parent")),
+):
+    await _require_active_link(db, current_user.id, student_id)
+    note = await crud.create_note(db, current_user.id, student_id, payload.message, payload.tag or "general")
+    await db.commit()
+    return note
+
+
+@router.get("/students/{student_id}/notes", response_model=list[NoteSchema])
+async def list_notes(
+    student_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("parent")),
+):
+    await _require_active_link(db, current_user.id, student_id)
+    return await crud.list_notes(db, student_id, parent_id=current_user.id)
+
+
+@router.post("/notes/{note_id}/reaction", response_model=NoteSchema)
+async def react_to_note(
+    note_id: str,
+    payload: NoteReaction,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("student")),
+):
+    """Student reacts to a parent note."""
+    note = await crud.add_note_reaction(db, note_id, current_user.id, payload.reaction)
+    if not note:
+        raise HTTPException(status_code=404, detail="Không tìm thấy ghi chú")
+    await db.commit()
+    return note
+
+
+@router.get("/student/notes", response_model=list[NoteSchema])
+async def student_notes(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("student")),
+):
+    """Student sees all notes sent to them."""
+    return await crud.list_notes(db, current_user.id)

@@ -124,3 +124,24 @@ async def update_session_status(
     plan.sessions = sessions
     await db.flush()
     return plan
+
+
+async def toggle_session_lock(
+    db: AsyncSession, session_id: str, locked: bool, owner_user_id: str
+) -> Optional[PlanRecord]:
+    """Toggle the `locked` flag on a session in the latest plan."""
+    plan = await get_latest_plan(db, owner_user_id)
+    if plan is None:
+        return None
+    sessions = list(plan.sessions)
+    found = False
+    for i, session in enumerate(sessions):
+        if session.get("id") == session_id:
+            sessions[i] = {**session, "locked": locked}
+            found = True
+            break
+    if not found:
+        return None
+    plan.sessions = sessions
+    await db.flush()
+    return plan

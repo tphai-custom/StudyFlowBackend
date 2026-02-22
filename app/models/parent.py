@@ -36,3 +36,18 @@ class ParentSuggestion(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class ParentNote(Base):
+    """Parent-to-student journal entry (P1 feature)."""
+    __tablename__ = "parent_notes"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    parent_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    student_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    message: Mapped[str] = mapped_column(String(1024), nullable=False)
+    tag: Mapped[str] = mapped_column(String(32), nullable=False, default="general")
+    reaction: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
