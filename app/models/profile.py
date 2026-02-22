@@ -25,6 +25,8 @@ class UserProfile(Base):
     daily_limit_preference: Mapped[int] = mapped_column(Integer, default=180)
     favorite_break_preset: Mapped[str] = mapped_column(String, default="Pomodoro 50/10")
     timezone: Mapped[str] = mapped_column(String, default="Asia/Ho_Chi_Minh")
+    # GMT offset in minutes, e.g. GMT+7 = 420
+    tz_offset_minutes: Mapped[int] = mapped_column(Integer, default=420)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

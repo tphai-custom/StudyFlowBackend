@@ -35,11 +35,16 @@ class TaskBase(BaseModel):
 
 
 class TaskCreate(TaskBase):
-    pass
+    locked_by_parent: bool = Field(alias="lockedByParent", default=False)
+    created_by_role: str = Field(alias="createdByRole", default="student")
+
+    model_config = {"populate_by_name": True, "serialize_by_alias": True}
 
 
 class TaskUpdate(TaskBase):
-    pass
+    locked_by_parent: bool = Field(alias="lockedByParent", default=False)
+
+    model_config = {"populate_by_name": True, "serialize_by_alias": True}
 
 
 class TaskSchema(TaskBase):
@@ -47,5 +52,7 @@ class TaskSchema(TaskBase):
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
     progress_minutes: int = Field(alias="progressMinutes", default=0)
+    locked_by_parent: bool = Field(alias="lockedByParent", default=False)
+    created_by_role: str = Field(alias="createdByRole", default="student")
 
     model_config = {"populate_by_name": True, "from_attributes": True, "serialize_by_alias": True}

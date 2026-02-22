@@ -16,6 +16,14 @@ class FeedbackCreate(BaseModel):
 
 class FeedbackSchema(FeedbackCreate):
     id: str
+    owner_user_id: str = ""
+    status: str = "open"
+    admin_reply: Optional[str] = None
     submitted_at: datetime = Field(alias="submittedAt")
 
     model_config = {"populate_by_name": True, "from_attributes": True, "serialize_by_alias": True}
+
+
+class FeedbackAdminUpdate(BaseModel):
+    status: Optional[Literal["open", "closed"]] = None
+    admin_reply: Optional[str] = None

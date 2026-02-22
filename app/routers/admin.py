@@ -12,12 +12,18 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import require_role
+from app.crud import feedback as feedback_crud
 from app.crud import library as library_crud
+from app.crud import plan_override as override_crud
+from app.crud import tasks as task_crud
 from app.crud import user as user_crud
 from app.database import get_db
 from app.models.library import LibraryItem
 from app.models.user import User
+from app.schemas.feedback import FeedbackAdminUpdate, FeedbackSchema
 from app.schemas.library import LibraryItemCreate, LibraryItemSchema
+from app.schemas.plan_override import PlanOverrideCreate, PlanOverrideSchema
+from app.schemas.task import TaskSchema
 from app.schemas.user import UserPublic
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -86,6 +92,84 @@ async def admin_reset_password(
 
 
 # ---------------------------------------------------------------------------
+# Admin: view user tasks
+# ---------------------------------------------------------------------------
+
+@router.get("/users/{user_id}/tasks", response_model=list[TaskSchema])
+async def admin_get_user_tasks(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_role("admin")),
+):
+    """List all tasks belonging to a user."""
+    user = await user_crud.get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+    return await task_crud.list_tasks(db, user_id)
+
+
+# ---------------------------------------------------------------------------
+# Admin: view & respond to user feedback
+# ---------------------------------------------------------------------------
+
+@router.get("/users/{user_id}/feedback", response_model=list[FeedbackSchema])
+async def admin_get_user_feedback(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_role("admin")),
+):
+    user = await user_crud.get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+    return await feedback_crud.list_feedback_by_user(db, user_id)
+
+
+@router.patch("/feedback/{feedback_id}", response_model=FeedbackSchema)
+async def admin_update_feedback(
+    feedback_id: str,
+    payload: FeedbackAdminUpdate,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_role("admin")),
+):
+    fb = await feedback_crud.admin_update_feedback(db, feedback_id, payload)
+    if not fb:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phản hồi")
+    await db.commit()
+    return fb
+
+
+# ---------------------------------------------------------------------------
+# Admin: plan overrides
+# ---------------------------------------------------------------------------
+
+@router.get("/users/{user_id}/plan-override", response_model=Optional[PlanOverrideSchema])
+async def admin_get_plan_override(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_role("admin")),
+):
+    user = await user_crud.get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+    return await override_crud.get_override(db, user_id)
+
+
+@router.post("/users/{user_id}/plan-override", response_model=PlanOverrideSchema, status_code=201)
+async def admin_save_plan_override(
+    user_id: str,
+    payload: PlanOverrideCreate,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_role("admin")),
+):
+    user = await user_crud.get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+    override = await override_crud.upsert_override(db, user_id, payload, admin.id)
+    await db.commit()
+    return override
+
+
+# ---------------------------------------------------------------------------
 # System library content management
 # ---------------------------------------------------------------------------
 
@@ -107,7 +191,7 @@ async def admin_list_system_library(
     """List only system-shared library items (owner_user_id IS NULL)."""
     result = await db.execute(
         select(LibraryItem)
-        .where(LibraryItem.owner_user_id == None)  # noqa: E711
+        .where(LibraryItem.owner_user_id.is_(None))
         .order_by(LibraryItem.subject, LibraryItem.title)
     )
     return result.scalars().all()
@@ -136,3 +220,4 @@ async def admin_delete_library_item(
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
     await db.commit()
+

@@ -7,11 +7,16 @@ from pydantic import BaseModel
 
 class LibraryItemCreate(BaseModel):
     subject: str
+    grade: Optional[int] = None  # 6..10
     level: str
     title: str
     summary: str
+    description: Optional[str] = None
+    resource_type: str = "lesson"
+    difficulty: Optional[int] = None  # 1..5
     url: Optional[str] = None
     tags: list[str] = []
+    created_by: Optional[str] = None
 
 
 class LibraryItemSchema(LibraryItemCreate):

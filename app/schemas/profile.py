@@ -29,6 +29,7 @@ class UserProfileSchema(BaseModel):
     daily_limit_preference: int = Field(alias="dailyLimitPreference", default=180)
     favorite_break_preset: str = Field(alias="favoriteBreakPreset", default="Pomodoro 50/10")
     timezone: str = "Asia/Ho_Chi_Minh"
+    tz_offset_minutes: int = Field(alias="tzOffsetMinutes", default=420)
     updated_at: datetime = Field(alias="updatedAt", default_factory=datetime.utcnow)
 
     model_config = {"populate_by_name": True, "from_attributes": True, "serialize_by_alias": True}
@@ -48,5 +49,6 @@ class UserProfileUpdate(BaseModel):
     daily_limit_preference: int = Field(alias="dailyLimitPreference", default=180)
     favorite_break_preset: str = Field(alias="favoriteBreakPreset", default="Pomodoro 50/10")
     timezone: str = "Asia/Ho_Chi_Minh"
+    tz_offset_minutes: int = Field(alias="tzOffsetMinutes", default=420)
 
     model_config = {"populate_by_name": True}
