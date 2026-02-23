@@ -10,6 +10,8 @@ from app.routers import import_draft
 from app.routers import auth
 from app.routers import parent as parent_router
 from app.routers import admin as admin_router
+from app.routers import exchange as exchange_router
+from app.routers import assigned as assigned_router
 
 
 @asynccontextmanager
@@ -54,6 +56,8 @@ app.include_router(import_draft.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(parent_router.router, prefix="/api/v1")
 app.include_router(admin_router.router, prefix="/api/v1")
+app.include_router(exchange_router.router, prefix="/api/v1")
+app.include_router(assigned_router.router, prefix="/api/v1")
 
 
 @app.get("/")
