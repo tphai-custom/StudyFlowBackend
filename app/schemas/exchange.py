@@ -56,3 +56,60 @@ class MessageActionCreateSession(BaseModel):
 
 class UnreadCountSchema(BaseModel):
     unread_count: int
+
+
+# ── Dashboard summary schemas ─────────────────────────────────────────────────
+
+class TodayHabitSummary(BaseModel):
+    total: int
+    done: int
+    undone_ids: list[str]
+
+
+class ExchangeSummary(BaseModel):
+    """GET /student/dashboard/exchange-summary"""
+    unread_parent_messages: int
+    open_parent_tasks: int
+    today_parent_habits: TodayHabitSummary
+
+    @property
+    def total_badge(self) -> int:
+        """Sum of all pending items for sidebar badge."""
+        return (
+            self.unread_parent_messages
+            + self.open_parent_tasks
+            + max(0, self.today_parent_habits.total - self.today_parent_habits.done)
+        )
+
+
+class ExchangeBadgeSummary(BaseModel):
+    """Short version for sidebar badge — GET /exchange/badge-summary"""
+    unread_messages: int
+    need_reply_messages: int = 0
+    pending_parent_tasks: int = 0  # ASSIGNED|SEEN tasks not yet acted on
+    pending_parent_habits_today: int = 0
+    # legacy aliases kept for backwards-compat
+    pending_tasks: int = 0
+    pending_habits: int = 0
+    total_badge: int
+
+
+class SessionProgressBlock(BaseModel):
+    done_sessions: int
+    planned_sessions: int
+    done_minutes: int
+    planned_minutes: int
+
+
+class ProgressSummary(BaseModel):
+    """GET /student/dashboard/progress-summary"""
+    today: SessionProgressBlock
+    week: SessionProgressBlock
+
+
+class BannerItem(BaseModel):
+    key: str       # unique key for dedup
+    level: str     # "info" | "warning" | "error"
+    message: str
+    href: Optional[str] = None
+

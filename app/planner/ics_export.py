@@ -50,13 +50,25 @@ def plan_to_ics(plan: PlanRecordSchema) -> str:
         criteria = _get(session, "success_criteria", "successCriteria") or []
         description = " • ".join(criteria) if criteria else "Hoàn thành buổi học"
 
+        # Parent task context
+        source_type = _get(session, "source_type", "sourceType")
+        locked_by_parent = _get(session, "locked_by_parent", "lockedByParent")
+        if source_type == "parent_task" or locked_by_parent:
+            is_locked = bool(locked_by_parent)
+            ph_label = "Bắt buộc" if is_locked else "Đề xuất"
+            display_title = f"[PH] {subject} · {title}"
+            badge_label = _get(session, "badge_label", "badgeLabel") or "Phụ huynh giao"
+            description = f"Phụ huynh giao • {ph_label} • {description}"
+        else:
+            display_title = f"{subject} · {title}"
+
         lines += [
             "BEGIN:VEVENT",
             f"UID:{session_id}@studyflow",
             f"DTSTAMP:{_format_date(plan.generated_at)}",
             f"DTSTART:{_format_date(planned_start)}",
             f"DTEND:{_format_date(planned_end)}",
-            f"SUMMARY:{subject} · {title}",
+            f"SUMMARY:{display_title}",
             f"DESCRIPTION:{description}",
             f"CATEGORIES:{subject}",
             f"COLOR:{_get_color(subject)}",

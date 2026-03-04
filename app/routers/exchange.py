@@ -15,16 +15,59 @@ from app.database import get_db
 from app.models.user import User
 from app.schemas.exchange import (
     BadgeCountSchema,
+    BannerItem,
+    ExchangeBadgeSummary,
     ExchangeMessageCreate,
     ExchangeMessageSchema,
+    ExchangeSummary,
     MessageActionAddChecklist,
     MessageActionCreateSession,
     MessageActionCreateTask,
+    ProgressSummary,
     QuickReplyCreate,
+    TodayHabitSummary,
     UnreadCountSchema,
 )
 
 router = APIRouter(tags=["exchange"])
+
+
+# ---------------------------------------------------------------------------
+# Badge summary (unified source of truth for sidebar + dashboard)
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/exchange/badge-summary",
+    response_model=ExchangeBadgeSummary,
+)
+async def student_badge_summary(
+    today: Optional[str] = Query(default=None, description="YYYY-MM-DD"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("student")),
+):
+    """Unified badge count for sidebar + dashboard. Single source of truth."""
+    from datetime import date
+    today_date = today or date.today().isoformat()
+    result = await crud.exchange_summary(db, current_user.id, today_date)
+    pending_habits = max(
+        0,
+        result["today_parent_habits"]["total"] - result["today_parent_habits"]["done"],
+    )
+    unread = result["unread_parent_messages"]
+    need_reply = result.get("need_reply_messages", unread)
+    pending_tasks = result["open_parent_tasks"]
+    # exchange_badge_total = unread + pending_tasks(ASSIGNED|SEEN) + pending_habits_today
+    total = unread + pending_tasks + pending_habits
+    return ExchangeBadgeSummary(
+        unread_messages=unread,
+        need_reply_messages=need_reply,
+        pending_parent_tasks=pending_tasks,
+        pending_parent_habits_today=pending_habits,
+        # legacy aliases
+        pending_tasks=pending_tasks,
+        pending_habits=pending_habits,
+        total_badge=total,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -335,3 +378,81 @@ async def action_pin_today(
         await db.commit()
         await db.refresh(msg)
     return {"pinned": msg.pinned, "message_id": msg.id}
+
+
+# ---------------------------------------------------------------------------
+# Dashboard summary endpoints (P0)
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/student/dashboard/exchange-summary",
+    response_model=ExchangeSummary,
+)
+async def student_exchange_summary(
+    today: Optional[str] = Query(default=None, description="YYYY-MM-DD in student timezone"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("student")),
+):
+    """Return exchange summary counts for dashboard widget."""
+    from datetime import date
+    today_date = today or date.today().isoformat()
+    result = await crud.exchange_summary(db, current_user.id, today_date)
+    return ExchangeSummary(
+        unread_parent_messages=result["unread_parent_messages"],
+        open_parent_tasks=result["open_parent_tasks"],
+        today_parent_habits=TodayHabitSummary(**result["today_parent_habits"]),
+    )
+
+
+@router.get(
+    "/student/dashboard/progress-summary",
+    response_model=ProgressSummary,
+)
+async def student_progress_summary(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("student")),
+):
+    """Return today vs. week progress breakdown (sessions + minutes done/planned)."""
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    result = await crud.progress_summary(db, current_user.id, now_iso)
+    return ProgressSummary(
+        today=result["today"],
+        week=result["week"],
+    )
+
+
+@router.get(
+    "/student/banners",
+    response_model=list[BannerItem],
+)
+async def student_banners(
+    today: Optional[str] = Query(default=None, description="YYYY-MM-DD in student timezone"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("student")),
+):
+    """Return list of in-app banners for dashboard/today header."""
+    from datetime import date
+    today_date = today or date.today().isoformat()
+    banners = await crud.build_banners(db, current_user.id, today_date)
+    return [BannerItem(**b) for b in banners]
+
+
+@router.get(
+    "/parent/students/{student_id}/progress-summary",
+    response_model=ProgressSummary,
+)
+async def parent_student_progress_summary(
+    student_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("parent")),
+):
+    """Return today vs. week progress for a linked student (parent view)."""
+    await _require_active_link(db, current_user.id, student_id)
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    result = await crud.progress_summary(db, student_id, now_iso)
+    return ProgressSummary(
+        today=result["today"],
+        week=result["week"],
+    )

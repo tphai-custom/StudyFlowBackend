@@ -12,13 +12,21 @@ class SessionSchema(BaseModel):
     task_id: Optional[str] = Field(alias="taskId", default=None)
     habit_id: Optional[str] = Field(alias="habitId", default=None)
     source: Literal["task", "habit", "break"]
+    # B1: canonical session type — STUDY, HABIT, BREAK
+    session_type: Literal["STUDY", "HABIT", "BREAK"] = Field(alias="sessionType", default="STUDY")
+    source_type: Optional[str] = Field(alias="sourceType", default=None)  # "self_task" | "parent_task"
+    badge_label: Optional[str] = Field(alias="badgeLabel", default=None)  # e.g. "Phụ huynh giao 🔒"
+    locked_by_parent: Optional[bool] = Field(alias="lockedByParent", default=None)
     subject: str
     title: str
     planned_start: str = Field(alias="plannedStart")
     planned_end: str = Field(alias="plannedEnd")
     minutes: int
+    # C4: study_minutes = actual study time (no buffer); occupied_minutes = calendar time (with buffer)
+    study_minutes: int = Field(alias="studyMinutes", default=0)
+    occupied_minutes: int = Field(alias="occupiedMinutes", default=0)
     buffer_minutes: int = Field(alias="bufferMinutes", default=0)
-    status: Literal["pending", "done", "skipped"] = "pending"
+    status: Literal["pending", "done", "skipped", "auto"] = "pending"
     locked: bool = False
     checklist: Optional[list[str]] = None
     success_criteria: Optional[list[str]] = Field(alias="successCriteria", default=None)

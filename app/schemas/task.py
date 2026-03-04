@@ -30,6 +30,16 @@ class TaskBase(BaseModel):
     success_criteria: list[str] = Field(alias="successCriteria", default_factory=list)
     milestones: Optional[list[TaskMilestoneSchema]] = None
     notes: Optional[str] = None
+    # P1: duration mode
+    duration_mode: Literal["exact", "estimate"] = Field(alias="durationMode", default="estimate")
+    duration_minutes_exact: Optional[int] = Field(alias="durationMinutesExact", default=None, ge=1)
+    duration_minutes_min: Optional[int] = Field(alias="durationMinutesMin", default=None, ge=1)
+    duration_minutes_max: Optional[int] = Field(alias="durationMinutesMax", default=None, ge=1)
+    # P1: scheduling style
+    scheduling_style: str = Field(alias="schedulingStyle", default="balanced")
+    # C1: computed target minutes (hard cap for planner)
+    # Not required in create/update body — backend computes it
+    target_minutes: Optional[int] = Field(alias="targetMinutes", default=None)
 
     model_config = {"populate_by_name": True, "serialize_by_alias": True}
 
@@ -54,5 +64,30 @@ class TaskSchema(TaskBase):
     progress_minutes: int = Field(alias="progressMinutes", default=0)
     locked_by_parent: bool = Field(alias="lockedByParent", default=False)
     created_by_role: str = Field(alias="createdByRole", default="student")
+    # parent-task fields
+    source: str = Field(default="student")
+    locked: bool = Field(default=False)
+    repeat: str = Field(default="none")
+    child_can_delete: bool = Field(alias="childCanDelete", default=True)
+    child_can_edit_core: bool = Field(alias="childCanEditCore", default=True)
+    parent_id: Optional[str] = Field(alias="parentId", default=None)
+    # target_minutes is always populated and returned
+    target_minutes: int = Field(alias="targetMinutes", default=0)
 
     model_config = {"populate_by_name": True, "from_attributes": True, "serialize_by_alias": True}
+
+
+class ParentTaskCreate(BaseModel):
+    """Body for POST /api/parent/tasks — parent creates a task for a student."""
+    student_id: str
+    title: str
+    subject: str = "Chung"
+    description: Optional[str] = None
+    deadline: Optional[str] = None
+    estimated_minutes: int = 60
+    priority: int = 2  # 1=low, 2=medium, 3=high
+    locked: bool = False
+    repeat: str = "none"  # none | daily | weekly
+    scheduling_style: str = "balanced"
+
+    model_config = {"populate_by_name": True}

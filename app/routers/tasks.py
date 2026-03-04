@@ -1,17 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_user
+from app.core.deps import get_current_user, require_role
 from app.crud import tasks as crud
 from app.crud import plan as plan_crud
+from app.crud import parent as parent_crud
 from app.database import get_db
 from app.models.user import User
-from app.schemas.task import TaskCreate, TaskSchema, TaskUpdate
+from app.schemas.task import TaskCreate, TaskSchema, TaskUpdate, ParentTaskCreate
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
-@router.get("/", response_model=list[TaskSchema])
+@router.get("", response_model=list[TaskSchema])
 async def list_tasks(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -19,7 +20,7 @@ async def list_tasks(
     return await crud.list_tasks(db, current_user.id)
 
 
-@router.post("/", response_model=TaskSchema, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=TaskSchema, status_code=status.HTTP_201_CREATED)
 async def create_task(
     payload: TaskCreate,
     db: AsyncSession = Depends(get_db),
@@ -83,3 +84,16 @@ async def update_progress(
     if not task or task.owner_user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Task not found")
     return await crud.update_task_progress(db, task_id, progress_minutes)
+
+
+@router.get("/{task_id}/progress", response_model=dict)
+async def get_task_progress(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return task progress computed from plan sessions (done_minutes / planned_minutes)."""
+    result = await crud.get_task_progress(db, task_id, current_user.id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return result

@@ -52,6 +52,11 @@ async def create_assigned_task(
         locked=data.locked,
         type="TASK",
         status="ASSIGNED",
+        duration_mode=data.duration_mode,
+        duration_minutes_exact=data.duration_minutes_exact,
+        duration_minutes_min=data.duration_minutes_min,
+        duration_minutes_max=data.duration_minutes_max,
+        scheduling_style=data.scheduling_style,
     )
     db.add(task)
     await db.flush()
@@ -95,11 +100,43 @@ async def list_assigned_tasks_for_student(
     return list(result.scalars().all())
 
 
+async def list_assigned_tasks_active_for_planner(
+    db: AsyncSession, student_id: str
+) -> list[ParentAssignedTask]:
+    """Return parent-assigned tasks eligible for plan generation.
+
+    - Locked tasks: include from ASSIGNED onwards (force into plan).
+    - Non-locked tasks: only ACCEPTED / INPROGRESS.
+    """
+    result = await db.execute(
+        select(ParentAssignedTask).where(
+            ParentAssignedTask.student_id == student_id,
+            ParentAssignedTask.status.notin_(["DONE", "VERIFIED", "ARCHIVED"]),
+        )
+    )
+    rows = list(result.scalars().all())
+    eligible = []
+    for r in rows:
+        if r.locked:
+            eligible.append(r)  # always schedule locked tasks
+        elif r.status in ("ACCEPTED", "INPROGRESS"):
+            eligible.append(r)
+    return eligible
+
+
 async def update_assigned_task(
     db: AsyncSession, task: ParentAssignedTask, data: AssignedTaskUpdate
 ) -> ParentAssignedTask:
     for field, val in data.model_dump(exclude_none=True).items():
         setattr(task, field, val)
+    await db.flush()
+    return task
+
+
+async def set_task_estimate(
+    db: AsyncSession, task: ParentAssignedTask, estimated_minutes: int
+) -> ParentAssignedTask:
+    task.estimated_minutes = estimated_minutes
     await db.flush()
     return task
 

@@ -120,19 +120,173 @@ def _build_buckets(
 
 
 # ---------------------------------------------------------------------------
-# Prioritise tasks
+# Urgency × StyleWeight priority system (C/D)
 # ---------------------------------------------------------------------------
 
-def _prioritize_tasks(tasks: list[TaskSchema]) -> list[TaskSchema]:
-    return sorted(
-        tasks,
-        key=lambda t: (
+URGENT_DAYS_THRESHOLD = 3  # Days left where "min 1 session/day" kicks in
+
+
+def _days_until(deadline_dt: datetime, ref_dt: datetime) -> int:
+    """Number of calendar days from ref_dt to deadline_dt (min 0)."""
+    delta = (deadline_dt.date() - ref_dt.date()).days
+    return max(0, delta)
+
+
+def _style_weight(progress: float, style: str) -> float:
+    """
+    C3: Style weight based on progress through [today .. deadline] window.
+    progress ∈ [0, 1]
+    front-load  → weight high early
+    balanced    → constant 1.0
+    deadline-loaded → weight high late
+    """
+    if style == "front-load":
+        return (1.0 - progress) ** 2 + 0.2
+    elif style == "deadline-loaded":
+        return progress ** 2 + 0.2
+    else:  # balanced
+        return 1.0
+
+
+def _task_priority(
+    task: TaskSchema, ref_dt: datetime, remaining_minutes: int
+) -> float:
+    """
+    C1/C2: priority = urgency_score * style_weight
+    urgency_score = remaining_minutes / days_left  (higher = more urgent)
+    """
+    days_left = max(1, _days_until(_as_vn_aware(task.deadline), ref_dt) + 1)
+    urgency_score = remaining_minutes / days_left
+
+    deadline_dt = _as_vn_aware(task.deadline)
+    start_dt = ref_dt  # today is the start of our window
+    total_window = max(1, _days_until(deadline_dt, start_dt))
+    # progress = 0 at ref_dt (start of window), 1 at deadline
+    progress = 0.0  # relative to today; used for initial triage
+
+    style = getattr(task, "scheduling_style", "balanced")
+    sw = _style_weight(progress, style)
+
+    return urgency_score * sw
+
+
+def _bucket_task_priority(
+    task: TaskSchema, bucket: "DayBucket", now: datetime, remaining_minutes: int
+) -> float:
+    """Per-bucket priority: urgency (based on days from bucket date to deadline) × style_weight."""
+    deadline_dt = _as_vn_aware(task.deadline)
+    bucket_dt = datetime.fromisoformat(f"{bucket.iso_date}T00:00:00+07:00")
+
+    days_left_from_bucket = max(1, _days_until(deadline_dt, bucket_dt) + 1)
+    urgency_score = remaining_minutes / days_left_from_bucket
+
+    total_window = max(1, _days_until(deadline_dt, now))
+    elapsed = max(0, _days_until(bucket_dt, now))
+    progress = min(1.0, elapsed / total_window) if total_window > 0 else 0.0
+
+    style = getattr(task, "scheduling_style", "balanced")
+    sw = _style_weight(progress, style)
+
+    return urgency_score * sw
+
+
+# ---------------------------------------------------------------------------
+# Prioritise tasks (initial sort — urgency-aware)
+# ---------------------------------------------------------------------------
+
+def _prioritize_tasks(tasks: list[TaskSchema], now: datetime | None = None) -> list[TaskSchema]:
+    """
+    Sort tasks: parent/locked first, then by urgency = remaining/days_left * style_weight.
+    This ensures a task with a near deadline is never buried behind a far-deadline task.
+    Falls back to deadline-ASC as a secondary key.
+    """
+    if now is None:
+        now = datetime.now(tz=TZ_OFFSET)
+
+    def sort_key(t: TaskSchema):
+        source_priority = (
+            0 if (getattr(t, "source", "student") == "parent" and getattr(t, "locked", False)) else
+            1 if getattr(t, "source", "student") == "parent" else 2
+        )
+        remaining = max(1, _effective_minutes(t) - t.progress_minutes)
+        # Higher priority = lower sort key → negate urgency
+        urgency = _task_priority(t, now, remaining)
+        return (
+            source_priority,
+            -urgency,  # more urgent first
             _as_vn_aware(t.deadline).timestamp(),
-            -(t.importance or 0),
-            -t.difficulty,
-            -t.estimated_minutes,
-        ),
-    )
+        )
+
+    return sorted(tasks, key=sort_key)
+
+
+# ---------------------------------------------------------------------------
+# Resolve effective_minutes based on duration_mode
+# ---------------------------------------------------------------------------
+
+def _effective_minutes(task: TaskSchema) -> int:
+    """C3: Use target_minutes if available (computed field). Otherwise compute inline.
+
+    target_minutes is the hard cap: sum(study_minutes) must equal this value.
+    """
+    # Prefer the pre-computed target_minutes field (added in n2o3p4q5r6s7 migration)
+    target = getattr(task, "target_minutes", None)
+    if target and target > 0:
+        return target
+
+    # Fallback: compute inline (for old/unpatched tasks)
+    duration_mode = getattr(task, "duration_mode", "estimate")
+    if duration_mode == "exact":
+        exact = getattr(task, "duration_minutes_exact", None)
+        if exact and exact > 0:
+            return exact
+    # estimate: clamp mid to [min, max]
+    t_min = getattr(task, "duration_minutes_min", None)
+    t_max = getattr(task, "duration_minutes_max", None)
+    if t_min and t_max and t_min > 0 and t_max > 0:
+        base = round((t_min + t_max) / 2)
+        return max(t_min, min(t_max, base))
+    # final fallback
+    return task.estimated_minutes
+
+
+# ---------------------------------------------------------------------------
+# Sort eligible buckets by scheduling style
+# ---------------------------------------------------------------------------
+
+def _sort_buckets_by_style(
+    buckets: list[DayBucket],
+    deadline: datetime,
+    style: str,
+) -> list[DayBucket]:
+    """
+    front-load    → earliest days first (index ASC)
+    balanced      → most remaining capacity first, tie-break by date
+    deadline-loaded → days closest to (but not past) deadline first
+    """
+    if style == "front-load":
+        return sorted(buckets, key=lambda b: b.iso_date)
+    elif style == "deadline-loaded":
+        # Sort descending by date (closest to deadline first), but never past it
+        deadline_str = deadline.strftime("%Y-%m-%d")
+        return sorted(
+            buckets,
+            key=lambda b: (
+                # higher = further from deadline (deprioritized)
+                (ord(deadline_str[5]) - ord(b.iso_date[5])) * 10000  # coarse month diff
+                + abs((b.iso_date > deadline_str) * 999999),  # penalise past deadline
+            ),
+            reverse=True,
+        )
+    else:  # balanced
+        # Prefer days with most remaining capacity (allowed - used), tie by date
+        return sorted(
+            buckets,
+            key=lambda b: (
+                -(b.allowed_minutes - b.used),  # most free first
+                b.iso_date,                      # tie: earlier date first
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -154,9 +308,14 @@ def _take_from_bucket(
             continue
         remaining_today = bucket.allowed_minutes - bucket.used
         chunk = min(chunk_preference, remaining, seg_capacity, MAX_SESSION_MINUTES, remaining_today)
-        if not allow_shorter_than_min and chunk < MIN_SESSION_MINUTES and remaining > MIN_SESSION_MINUTES:
+        # Fix blank-day bug: allow short "tail" sessions when nearly done
+        # (remaining <= MIN_SESSION_MINUTES means we're almost done — don't skip)
+        tail_session = remaining <= MIN_SESSION_MINUTES
+        if not allow_shorter_than_min and not tail_session and chunk < MIN_SESSION_MINUTES and remaining > MIN_SESSION_MINUTES:
             continue
         minutes = chunk if chunk != 0 else min(remaining, seg_capacity)
+        if minutes <= 0:
+            continue
         session_start = _add_minutes(segment.start, segment.used)
         session_end = _add_minutes(session_start, minutes)
         segment.used += minutes
@@ -205,17 +364,21 @@ def _schedule_habits(
 
             while allocation and remaining > 0:
                 mins = allocation["minutes"]
+                buf = round(mins * settings.buffer_percent * 0.5)
                 habit_sessions.append(
                     SessionSchema(
                         id=str(uuid.uuid4()),
                         habitId=habit.id,
                         source="habit",
+                        sessionType="HABIT",
                         subject="Thói quen",
                         title=habit.name,
                         plannedStart=allocation["session_start"].isoformat(),
                         plannedEnd=allocation["session_end"].isoformat(),
                         minutes=mins,
-                        bufferMinutes=round(mins * settings.buffer_percent * 0.5),
+                        studyMinutes=mins,
+                        occupiedMinutes=mins + buf,
+                        bufferMinutes=buf,
                         status="pending",
                         successCriteria=[f"Duy trì {mins} phút"],
                         planVersion=plan_version,
@@ -296,13 +459,16 @@ def _apply_breaks(
                 SessionSchema(
                     id=str(uuid.uuid4()),
                     source="break",
+                    sessionType="BREAK",
                     subject="Nghỉ",
                     title=break_label,
                     plannedStart=break_start.isoformat(),
                     plannedEnd=break_end.isoformat(),
                     minutes=rest_minutes,
+                    studyMinutes=0,
+                    occupiedMinutes=rest_minutes,
                     bufferMinutes=0,
-                    status="pending",
+                    status="auto",
                     successCriteria=["Nghỉ ngơi"],
                     planVersion=plan_version,
                 )
@@ -331,7 +497,7 @@ def generate_plan(
     plan_version = (previous_plan_version or 0) + 1
 
     future_tasks = [t for t in tasks if _as_vn_aware(t.deadline) > now]
-    prioritized = _prioritize_tasks(future_tasks)
+    prioritized = _prioritize_tasks(future_tasks, now)
 
     latest_deadline = now
     for task in prioritized:
@@ -354,7 +520,7 @@ def generate_plan(
 
     total_capacity = sum(b.allowed_minutes for b in buckets)
     total_demand = sum(
-        max(0, t.estimated_minutes - t.progress_minutes) for t in prioritized
+        max(0, _effective_minutes(t) - t.progress_minutes) for t in prioritized
     )
 
     suggestions: list[PlanSuggestionSchema] = list(habit_suggestions)
@@ -372,109 +538,188 @@ def generate_plan(
     unscheduled: list[TaskSchema] = []
     focus_chunk = settings.break_preset.focus or 45
 
-    for task in prioritized:
-        remaining = max(0, task.estimated_minutes - task.progress_minutes)
-        deadline = _as_vn_aware(task.deadline)
-        eligible_buckets = [
-            b
-            for b in buckets
-            if b.iso_date <= deadline.strftime("%Y-%m-%d")
-        ]
-        if not eligible_buckets:
-            unscheduled.append(task)
-            suggestions.append(
-                PlanSuggestionSchema(
-                    type="increase_free_time",
-                    message=f'Task "{task.title}" không nằm trong bất kỳ slot nào.',
-                )
-            )
-            continue
-
-        base_criteria = (
-            task.success_criteria
-            if task.success_criteria
-            else ["Hoàn thành buổi học"]
-        )
-        checklist = (
-            [item.strip() for item in task.content_focus.splitlines() if item.strip()]
-            if task.content_focus
+    # ── Build per-task remaining-minutes tracker ──────────────────────────
+    task_remaining: dict[str, int] = {}
+    task_criteria: dict[str, list[str]] = {}
+    task_checklist: dict[str, Optional[list[str]]] = {}
+    for t in prioritized:
+        effective_total = _effective_minutes(t)
+        task_remaining[t.id] = max(0, effective_total - t.progress_minutes)
+        task_criteria[t.id] = t.success_criteria if t.success_criteria else ["Hoàn thành buổi học"]
+        task_checklist[t.id] = (
+            [item.strip() for item in t.content_focus.splitlines() if item.strip()]
+            if t.content_focus
             else None
         )
 
-        def allocate(
-            bucket: DayBucket,
-            minutes_needed: int,
-            chunk_pref: int,
-            milestone_title: Optional[str] = None,
-        ) -> int:
-            nonlocal remaining
-            local_remaining = minutes_needed
-            attempt = _take_from_bucket(
-                bucket,
-                local_remaining,
-                chunk_pref,
-                allow_shorter_than_min=bool(milestone_title),
+    def _emit_session(task: TaskSchema, attempt: dict, milestone_title: Optional[str] = None) -> None:
+        mins = attempt["minutes"]
+        buf = round(mins * settings.buffer_percent)
+        # C4: study_minutes = study time; occupied_minutes = study + buffer
+        sessions.append(
+            SessionSchema(
+                id=str(uuid.uuid4()),
+                taskId=task.id,
+                source="task",
+                sessionType="STUDY",
+                subject=task.subject,
+                title=task.title,
+                plannedStart=attempt["session_start"].isoformat(),
+                plannedEnd=attempt["session_end"].isoformat(),
+                minutes=mins,
+                studyMinutes=mins,
+                occupiedMinutes=mins + buf,
+                bufferMinutes=buf,
+                status="pending",
+                checklist=task_checklist[task.id],
+                successCriteria=task_criteria[task.id],
+                milestoneTitle=milestone_title,
+                planVersion=plan_version,
             )
-            while attempt and local_remaining > 0:
-                mins = attempt["minutes"]
-                sessions.append(
-                    SessionSchema(
-                        id=str(uuid.uuid4()),
-                        taskId=task.id,
-                        source="task",
-                        subject=task.subject,
-                        title=task.title,
-                        plannedStart=attempt["session_start"].isoformat(),
-                        plannedEnd=attempt["session_end"].isoformat(),
-                        minutes=mins,
-                        bufferMinutes=round(mins * settings.buffer_percent),
-                        status="pending",
-                        checklist=checklist,
-                        successCriteria=base_criteria,
-                        milestoneTitle=milestone_title,
-                        planVersion=plan_version,
-                    )
-                )
-                remaining -= mins
-                local_remaining -= mins
-                attempt = (
-                    _take_from_bucket(
-                        bucket,
-                        local_remaining,
-                        chunk_pref,
-                        allow_shorter_than_min=bool(milestone_title),
-                    )
-                    if local_remaining > 0
-                    else None
-                )
-            return local_remaining
+        )
+        task_remaining[task.id] -= mins
 
-        if task.milestones:
-            for milestone in task.milestones:
-                ms_remaining = min(milestone.minutes_estimate, remaining)
-                for bucket in eligible_buckets:
-                    if ms_remaining <= 0:
+    def _allocate_for_task(
+        bucket: DayBucket,
+        task: TaskSchema,
+        minutes_needed: int,
+        chunk_pref: int,
+        allow_short: bool = False,
+        milestone_title: Optional[str] = None,
+    ) -> int:
+        """Try to allocate minutes_needed from bucket for task. Returns minutes actually consumed."""
+        consumed = 0
+        local_remaining = minutes_needed
+        attempt = _take_from_bucket(bucket, local_remaining, chunk_pref, allow_shorter_than_min=allow_short or bool(milestone_title))
+        while attempt and local_remaining > 0:
+            mins = attempt["minutes"]
+            _emit_session(task, attempt, milestone_title)
+            consumed += mins
+            local_remaining -= mins
+            attempt = (
+                _take_from_bucket(bucket, local_remaining, chunk_pref, allow_shorter_than_min=allow_short or bool(milestone_title))
+                if local_remaining > 0
+                else None
+            )
+        return consumed
+
+    # ── Main pass: per-bucket chronological, tasks sorted by urgency×style ──
+    sorted_buckets = sorted(buckets, key=lambda b: b.iso_date)
+
+    for bucket in sorted_buckets:
+        bucket_dt = datetime.fromisoformat(f"{bucket.iso_date}T00:00:00+07:00")
+
+        # Eligible tasks for this bucket: deadline >= bucket.date AND still has remaining
+        eligible = [
+            t for t in prioritized
+            if task_remaining.get(t.id, 0) > 0
+            and _as_vn_aware(t.deadline).strftime("%Y-%m-%d") >= bucket.iso_date
+        ]
+        if not eligible:
+            continue
+
+        # Sort by bucket-specific priority: urgency_score × style_weight (descending)
+        eligible.sort(
+            key=lambda t: _bucket_task_priority(t, bucket, now, task_remaining[t.id]),
+            reverse=True,
+        )
+
+        for task in eligible:
+            if bucket.used >= bucket.allowed_minutes:
+                break
+            rm = task_remaining[task.id]
+            if rm <= 0:
+                continue
+
+            if task.milestones:
+                for milestone in task.milestones:
+                    ms_needed = min(milestone.minutes_estimate, rm)
+                    _allocate_for_task(bucket, task, ms_needed, milestone.minutes_estimate, allow_short=True, milestone_title=milestone.title)
+                    rm = task_remaining[task.id]
+                    if rm <= 0:
                         break
-                    ms_remaining = allocate(
-                        bucket,
-                        ms_remaining,
-                        milestone.minutes_estimate,
-                        milestone.title,
-                    )
-        else:
-            for bucket in eligible_buckets:
-                if remaining <= 0:
-                    break
-                allocate(bucket, remaining, focus_chunk)
+            else:
+                _allocate_for_task(bucket, task, rm, focus_chunk)
 
-        if remaining > 0:
-            unscheduled.append(task)
-            suggestions.append(
-                PlanSuggestionSchema(
-                    type="reduce_duration",
-                    message=f'Nhiệm vụ "{task.title}" thiếu {remaining} phút. Giảm thời lượng hoặc thêm slot.',
+    # ── Urgent enforcement: days_left ≤ URGENT_DAYS_THRESHOLD → ensure ≥ 1 session/day ──
+    # If a task is urgent but got 0 sessions on an eligible day, force a short session (C4 Rule1).
+    sessions_by_day_task: dict[tuple, int] = {}  # (iso_date, task_id) → session count
+    for s in sessions:
+        if s.source != "task" or not s.task_id:
+            continue
+        key = (s.planned_start[:10], s.task_id)
+        sessions_by_day_task[key] = sessions_by_day_task.get(key, 0) + 1
+
+    for task in prioritized:
+        if task_remaining.get(task.id, 0) <= 0:
+            continue
+        deadline_dt = _as_vn_aware(task.deadline)
+        days_left = _days_until(deadline_dt, now)
+        if days_left > URGENT_DAYS_THRESHOLD:
+            continue
+        # Urgent task: ensure at least 1 session per remaining eligible bucket
+        for bucket in sorted_buckets:
+            bucket_dt = datetime.fromisoformat(f"{bucket.iso_date}T00:00:00+07:00")
+            if bucket_dt < now:
+                continue
+            if bucket.iso_date > deadline_dt.strftime("%Y-%m-%d"):
+                break
+            if (bucket.iso_date, task.id) in sessions_by_day_task:
+                continue  # already has a session on this day
+            rm = task_remaining[task.id]
+            if rm <= 0:
+                break
+            consumed = _allocate_for_task(bucket, task, rm, MIN_SESSION_MINUTES, allow_short=True)
+            if consumed > 0:
+                sessions_by_day_task[(bucket.iso_date, task.id)] = 1
+
+    # ── EDF Fallback: fill empty bucket capacity with remaining tasks (C5 / B4) ──
+    # Any bucket that still has capacity and there are still remaining tasks → fill them (EDF order).
+    for bucket in sorted_buckets:
+        if bucket.used >= bucket.allowed_minutes:
+            continue
+        leftover = [
+            t for t in prioritized
+            if task_remaining.get(t.id, 0) > 0
+            and _as_vn_aware(t.deadline).strftime("%Y-%m-%d") >= bucket.iso_date
+        ]
+        if not leftover:
+            continue
+        # EDF: earliest deadline first
+        leftover.sort(key=lambda t: _as_vn_aware(t.deadline).timestamp())
+        for task in leftover:
+            if bucket.used >= bucket.allowed_minutes:
+                break
+            rm = task_remaining[task.id]
+            if rm <= 0:
+                continue
+            _allocate_for_task(bucket, task, rm, focus_chunk)
+
+    # ── Report unscheduled tasks ──────────────────────────────────────────
+    for task in prioritized:
+        rm = task_remaining.get(task.id, 0)
+        effective_total = _effective_minutes(task)
+        original_rm = max(0, effective_total - task.progress_minutes)
+        scheduled_minutes = original_rm - rm
+        if rm > 0:
+            if scheduled_minutes == 0:
+                unscheduled.append(task)
+                suggestions.append(
+                    PlanSuggestionSchema(
+                        type="increase_free_time",
+                        message=f'Nhiệm vụ "{task.title}" ({task.estimated_minutes}p) chưa được xếp lịch. Thêm slot hoặc lùi deadline.',
+                    )
                 )
-            )
+            else:
+                suggestions.append(
+                    PlanSuggestionSchema(
+                        type="reduce_duration",
+                        message=(
+                            f'Nhiệm vụ "{task.title}" chỉ xếp được {scheduled_minutes}/{task.estimated_minutes} phút '
+                            f'(thiếu {rm}p). Thêm slot rảnh hoặc giảm ước lượng.'
+                        ),
+                    )
+                )
 
     sessions_with_breaks = _apply_breaks(sessions, settings, plan_version)
     generated_at = datetime.utcnow().isoformat()

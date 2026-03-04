@@ -10,7 +10,7 @@ from app.schemas.profile import UserProfileSchema, UserProfileUpdate
 router = APIRouter(prefix="/profile", tags=["profile"])
 
 
-@router.get("/", response_model=UserProfileSchema)
+@router.get("", response_model=UserProfileSchema)
 async def get_profile(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
@@ -18,7 +18,7 @@ async def get_profile(
     return await crud.get_profile(db)
 
 
-@router.put("/", response_model=UserProfileSchema)
+@router.put("", response_model=UserProfileSchema)
 async def save_profile(
     payload: UserProfileUpdate,
     db: AsyncSession = Depends(get_db),

@@ -12,6 +12,8 @@ from app.routers import parent as parent_router
 from app.routers import admin as admin_router
 from app.routers import exchange as exchange_router
 from app.routers import assigned as assigned_router
+from app.routers import progress as progress_router
+from app.routers import reports as reports_router
 
 
 @asynccontextmanager
@@ -26,6 +28,8 @@ app = FastAPI(
     version=settings.app_version,
     debug=settings.debug,
     lifespan=lifespan,
+    # Disable automatic redirect /tasks/ → /tasks (307 strips Authorization header in some clients)
+    redirect_slashes=False,
 )
 
 app.add_middleware(
@@ -58,6 +62,8 @@ app.include_router(parent_router.router, prefix="/api/v1")
 app.include_router(admin_router.router, prefix="/api/v1")
 app.include_router(exchange_router.router, prefix="/api/v1")
 app.include_router(assigned_router.router, prefix="/api/v1")
+app.include_router(progress_router.router, prefix="/api/v1")
+app.include_router(reports_router.router, prefix="/api/v1")
 
 
 @app.get("/")

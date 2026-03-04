@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.parent import ParentStudentLink, ParentSuggestion, ParentNote
+from app.models.parent_settings_lock import ParentSettingsLock
 from app.models.user import User
 from app.models.task import Task
 from app.models.plan import PlanRecord
@@ -349,3 +350,173 @@ async def add_note_reaction(
         note.reaction = reaction
         await db.flush()
     return note
+
+
+# ---------------------------------------------------------------------------
+# Daily Report
+# ---------------------------------------------------------------------------
+
+async def get_daily_report(
+    db: AsyncSession,
+    student_id: str,
+    date_str: Optional[str] = None,
+):
+    """Compute daily planned/done minutes for a student."""
+    from app.schemas.parent import DailyReport, DailySessionSummary
+
+    # Determine target date
+    if date_str:
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            target_date = datetime.now(tz=timezone.utc).date()
+    else:
+        target_date = datetime.now(tz=timezone.utc).date()
+
+    date_label = target_date.strftime("%Y-%m-%d")
+
+    # Latest plan
+    plan_result = await db.execute(
+        select(PlanRecord)
+        .where(PlanRecord.owner_user_id == student_id)
+        .order_by(PlanRecord.created_at.desc())
+        .limit(1)
+    )
+    plan = plan_result.scalar_one_or_none()
+
+    # Collect task titles for enrichment
+    tasks_result = await db.execute(
+        select(Task).where(Task.owner_user_id == student_id)
+    )
+    task_map: dict[str, Task] = {t.id: t for t in tasks_result.scalars().all()}
+
+    total_planned = 0
+    total_done = 0
+    sessions_out: list[DailySessionSummary] = []
+    alerts: list[str] = []
+
+    if plan and plan.sessions:
+        for s in plan.sessions:
+            ps = s.get("plannedStart") or s.get("planned_start", "")
+            try:
+                dt = datetime.fromisoformat(ps.replace("Z", "+00:00"))
+                if dt.date() != target_date:
+                    continue
+            except Exception:
+                continue
+
+            mins = s.get("minutes", 0)
+            status = s.get("status", "pending")
+            task_id = s.get("taskId") or s.get("task_id")
+            task = task_map.get(task_id) if task_id else None
+
+            total_planned += mins
+            if status == "done":
+                total_done += mins
+
+            sessions_out.append(DailySessionSummary(
+                session_id=s.get("id", ""),
+                task_id=task_id,
+                task_title=task.title if task else s.get("title"),
+                subject=task.subject if task else s.get("subject"),
+                planned_start=ps,
+                minutes=mins,
+                status=status,
+            ))
+    else:
+        alerts.append("Chưa có kế hoạch học tập")
+
+    sessions_out.sort(key=lambda x: x.planned_start or "")
+    completion_rate = round((total_done / total_planned * 100) if total_planned else 0, 1)
+
+    if total_planned > 0 and completion_rate < 60:
+        alerts.append(f"Hoàn thành chỉ {completion_rate:.0f}% trong ngày này")
+    if total_planned == 0:
+        alerts.append("Ngày này không có phiên học nào")
+
+    return DailyReport(
+        student_id=student_id,
+        date=date_label,
+        total_planned_minutes=total_planned,
+        total_done_minutes=total_done,
+        completion_rate=completion_rate,
+        sessions=sessions_out,
+        alerts=alerts,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Parent Settings Lock
+# ---------------------------------------------------------------------------
+
+async def get_settings_lock(
+    db: AsyncSession,
+    student_id: str,
+    parent_id: str,
+) -> Optional[ParentSettingsLock]:
+    """Return the lock record for a student/parent pair, or None."""
+    result = await db.execute(
+        select(ParentSettingsLock).where(
+            ParentSettingsLock.student_id == student_id,
+            ParentSettingsLock.parent_id == parent_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_locked_fields_for_student(
+    db: AsyncSession,
+    student_id: str,
+) -> list[str]:
+    """Return merged locked fields imposed by ANY linked parent."""
+    result = await db.execute(
+        select(ParentSettingsLock).where(ParentSettingsLock.student_id == student_id)
+    )
+    locks = list(result.scalars().all())
+    merged: set[str] = set()
+    for lock in locks:
+        merged.update(lock.locked_fields or [])
+    return list(merged)
+
+
+async def get_merged_locked_values_for_student(
+    db: AsyncSession,
+    student_id: str,
+) -> dict:
+    """Return merged {field_name: value} dict imposed by ANY linked parent.
+    Only includes fields that have explicit values set by parents."""
+    result = await db.execute(
+        select(ParentSettingsLock).where(ParentSettingsLock.student_id == student_id)
+    )
+    locks = list(result.scalars().all())
+    merged: dict = {}
+    for lock in locks:
+        if lock.locked_values:
+            merged.update(lock.locked_values)
+    return merged
+
+
+async def upsert_settings_lock(
+    db: AsyncSession,
+    student_id: str,
+    parent_id: str,
+    locked_fields: list[str],
+    locked_values: Optional[dict] = None,
+) -> ParentSettingsLock:
+    """Create or update a settings lock record."""
+    lock = await get_settings_lock(db, student_id, parent_id)
+    if lock is None:
+        lock = ParentSettingsLock(
+            id=str(uuid.uuid4()),
+            student_id=student_id,
+            parent_id=parent_id,
+            locked_fields=locked_fields,
+            locked_values=locked_values,
+        )
+        db.add(lock)
+    else:
+        lock.locked_fields = locked_fields
+        lock.locked_values = locked_values
+        lock.updated_at = datetime.now(tz=timezone.utc)
+    await db.flush()
+    return lock

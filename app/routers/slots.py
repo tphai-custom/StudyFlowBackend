@@ -10,7 +10,7 @@ from app.schemas.free_slot import FreeSlotCreate, FreeSlotSchema
 router = APIRouter(prefix="/slots", tags=["free-slots"])
 
 
-@router.get("/", response_model=list[FreeSlotSchema])
+@router.get("", response_model=list[FreeSlotSchema])
 async def list_slots(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -18,7 +18,7 @@ async def list_slots(
     return await crud.list_slots(db, current_user.id)
 
 
-@router.post("/", response_model=FreeSlotSchema, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=FreeSlotSchema, status_code=status.HTTP_201_CREATED)
 async def create_slot(
     payload: FreeSlotCreate,
     db: AsyncSession = Depends(get_db),

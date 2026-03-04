@@ -17,6 +17,13 @@ class AssignedTaskCreate(BaseModel):
     priority: int = 2  # 1-3
     tag: str = "study"  # study | practice | read | review | other
     locked: bool = False
+    estimated_minutes: Optional[int] = None
+    # B3: duration + scheduling style (set by parent when assigning)
+    duration_mode: str = "estimate"  # exact | estimate
+    duration_minutes_exact: Optional[int] = None
+    duration_minutes_min: Optional[int] = None
+    duration_minutes_max: Optional[int] = None
+    scheduling_style: str = "balanced"  # front-load | balanced | deadline-loaded
 
 
 class AssignedTaskUpdate(BaseModel):
@@ -28,6 +35,12 @@ class AssignedTaskUpdate(BaseModel):
     tag: Optional[str] = None
     locked: Optional[bool] = None
     status: Optional[str] = None  # ARCHIVED | VERIFIED + others
+    estimated_minutes: Optional[int] = None
+    duration_mode: Optional[str] = None
+    duration_minutes_exact: Optional[int] = None
+    duration_minutes_min: Optional[int] = None
+    duration_minutes_max: Optional[int] = None
+    scheduling_style: Optional[str] = None
 
 
 class AssignedTaskSchema(BaseModel):
@@ -43,13 +56,33 @@ class AssignedTaskSchema(BaseModel):
     locked: bool
     type: str
     status: str
+    estimated_minutes: Optional[int] = None
     student_note: Optional[str] = None
     reschedule_requested_date: Optional[str] = None
     reschedule_reason: Optional[str] = None
+    # B3: duration + style fields
+    duration_mode: str = "estimate"
+    duration_minutes_exact: Optional[int] = None
+    duration_minutes_min: Optional[int] = None
+    duration_minutes_max: Optional[int] = None
+    scheduling_style: str = "balanced"
+    converted_task_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ConvertTaskResponse(BaseModel):
+    """Response from POST /student/assigned-tasks/{id}/convert."""
+    task_id: str               # newly created real Task id
+    assignment_status: str     # always 'CONVERTED'
+    already_converted: bool    # True if was already converted before this call
+
+
+class StudentTaskEstimate(BaseModel):
+    """Student sets estimated_minutes when accepting a parent task."""
+    estimated_minutes: Optional[int] = None  # 15 | 30 | 45 | 60 | 90 | ...
 
 
 class StudentTaskAction(BaseModel):

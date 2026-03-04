@@ -34,8 +34,20 @@ class ParentAssignedTask(Base):
     # "TASK" | "IDEA_CONVERTED"
     type: Mapped[str] = mapped_column(String(32), nullable=False, default="TASK")
 
-    # ASSIGNED | SEEN | ACCEPTED | INPROGRESS | DONE | VERIFIED | ARCHIVED
+    # Optional planner estimate (minutes) – set by student when accepting
+    estimated_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # ASSIGNED | SEEN | ACCEPTED | INPROGRESS | DONE | VERIFIED | ARCHIVED | CONVERTED
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="ASSIGNED", index=True)
+
+    # ── Duration fields (added in migration m1n2o3p4q5r6) ───────────────────
+    duration_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="estimate")
+    duration_minutes_exact: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    duration_minutes_min: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    duration_minutes_max: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    scheduling_style: Mapped[str] = mapped_column(String(32), nullable=False, default="balanced")
+    # set after student converts assignment → real Task
+    converted_task_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     student_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     reschedule_requested_date: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)

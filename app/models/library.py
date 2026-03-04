@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Integer, String, Text
+from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -18,7 +19,7 @@ SUBJECT_LABELS = {
     "lich_su": "Lịch sử",
     "dia_li": "Địa lí",
 }
-# Allowed resource types
+# Allowed resource types (kept for backward compat)
 ALLOWED_TYPES = ["lesson", "summary", "worksheet", "video", "book", "website"]
 
 
@@ -40,3 +41,17 @@ class LibraryItem(Base):
     created_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     # NULL = system-shared content; set to user id for user-created items
     owner_user_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+
+    # ── v2 content-group columns ─────────────────────────────────────────────
+    # Each is a JSON array of strings.  Defaulting to [] if absent.
+    lessons: Mapped[list] = mapped_column(JSONB, nullable=True, default=list)
+    summaries: Mapped[list] = mapped_column(JSONB, nullable=True, default=list)
+    exercises: Mapped[list] = mapped_column(JSONB, nullable=True, default=list)
+    videos: Mapped[list] = mapped_column(JSONB, nullable=True, default=list)
+
+    created_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

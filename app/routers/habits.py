@@ -11,7 +11,7 @@ from app.schemas.habit import HabitCreate, HabitSchema
 router = APIRouter(prefix="/habits", tags=["habits"])
 
 
-@router.get("/", response_model=list[HabitSchema])
+@router.get("", response_model=list[HabitSchema])
 async def list_habits(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -19,7 +19,7 @@ async def list_habits(
     return await crud.list_habits(db, current_user.id)
 
 
-@router.post("/", response_model=HabitSchema, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=HabitSchema, status_code=status.HTTP_201_CREATED)
 async def create_habit(
     payload: HabitCreate,
     db: AsyncSession = Depends(get_db),

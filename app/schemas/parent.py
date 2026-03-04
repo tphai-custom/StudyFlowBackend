@@ -81,6 +81,48 @@ class WeeklySummary(BaseModel):
     planned_minutes: int
 
 
+class DailySessionSummary(BaseModel):
+    session_id: str
+    task_id: Optional[str] = None
+    task_title: Optional[str] = None
+    subject: Optional[str] = None
+    planned_start: Optional[str] = None
+    minutes: int
+    status: str  # done | skip | pending
+
+
+class DailyReport(BaseModel):
+    student_id: str
+    date: str  # YYYY-MM-DD
+    total_planned_minutes: int
+    total_done_minutes: int
+    completion_rate: float  # 0-100
+    sessions: List[DailySessionSummary]
+    alerts: List[str]
+
+
+# ---- Parent Settings Lock ----
+
+LOCKABLE_FIELDS = ["daily_limit_minutes", "buffer_percent", "break_preset", "timezone"]
+
+
+class SettingsLockUpdate(BaseModel):
+    locked_fields: List[str]
+    # Optional: specific values the parent wants to enforce.
+    # Dict keys must be in locked_fields. If omitted, student's current value is preserved.
+    locked_values: Optional[dict] = None
+
+
+class SettingsLockSchema(BaseModel):
+    student_id: str
+    parent_id: str
+    locked_fields: List[str]
+    locked_values: Optional[dict] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
 # ---- Parent notes (P1 journal) ----
 
 class NoteCreate(BaseModel):

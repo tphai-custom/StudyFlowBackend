@@ -1,7 +1,7 @@
 """Port of planService.ts — orchestrate planner with feedback tuning."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,9 +16,11 @@ from app.crud import tasks as tasks_crud
 from app.planner.generate_plan import generate_plan
 from app.schemas.free_slot import FreeSlotSchema
 from app.schemas.habit import HabitSchema
-from app.schemas.plan import PlanRecordSchema
+from app.schemas.plan import PlanRecordSchema, PlanSuggestionSchema
 from app.schemas.settings import AppSettingsSchema
 from app.schemas.task import TaskSchema
+
+_TZ_VN = timezone(timedelta(hours=7))
 
 
 def _model_to_task(t) -> TaskSchema:
@@ -41,6 +43,16 @@ def _model_to_task(t) -> TaskSchema:
         createdAt=t.created_at,
         updatedAt=t.updated_at,
         progressMinutes=t.progress_minutes,
+        lockedByParent=getattr(t, "locked_by_parent", False) or getattr(t, "locked", False),
+        createdByRole=getattr(t, "created_by_role", "student"),
+        source=getattr(t, "source", "student"),
+        locked=getattr(t, "locked", False),
+        repeat=getattr(t, "repeat", "none"),
+        durationMode=getattr(t, "duration_mode", "estimate"),
+        durationMinutesExact=getattr(t, "duration_minutes_exact", None),
+        durationMinutesMin=getattr(t, "duration_minutes_min", None),
+        durationMinutesMax=getattr(t, "duration_minutes_max", None),
+        schedulingStyle=getattr(t, "scheduling_style", "balanced"),
     )
 
 
@@ -84,15 +96,28 @@ async def _tune_settings_with_feedback(db: AsyncSession, owner_user_id: str) -> 
     )
 
     if not feedback_list:
-        return settings
+        pass  # still apply parent locks below
+    else:
+        latest = feedback_list[-1]
+        if latest.label == "too_dense":
+            settings.buffer_percent = min(0.5, settings.buffer_percent + 0.1)
+        elif latest.label == "too_easy":
+            settings.buffer_percent = max(0.05, settings.buffer_percent - 0.05)
+        elif latest.label == "need_more_time":
+            settings.daily_limit_minutes = min(600, settings.daily_limit_minutes + 30)
 
-    latest = feedback_list[-1]
-    if latest.label == "too_dense":
-        settings.buffer_percent = min(0.5, settings.buffer_percent + 0.1)
-    elif latest.label == "too_easy":
-        settings.buffer_percent = max(0.05, settings.buffer_percent - 0.05)
-    elif latest.label == "need_more_time":
-        settings.daily_limit_minutes = min(600, settings.daily_limit_minutes + 30)
+    # Apply parent-locked setting overrides (E)
+    from app.crud import parent as parent_crud
+    locked_values = await parent_crud.get_merged_locked_values_for_student(db, owner_user_id)
+    if locked_values:
+        if "daily_limit_minutes" in locked_values and locked_values["daily_limit_minutes"] is not None:
+            settings.daily_limit_minutes = int(locked_values["daily_limit_minutes"])
+        if "buffer_percent" in locked_values and locked_values["buffer_percent"] is not None:
+            settings.buffer_percent = float(locked_values["buffer_percent"])
+        if "break_preset" in locked_values and locked_values["break_preset"] is not None:
+            settings.break_preset = locked_values["break_preset"]
+        if "timezone" in locked_values and locked_values["timezone"] is not None:
+            settings.timezone = locked_values["timezone"]
 
     return settings
 
@@ -102,7 +127,8 @@ async def rebuild_plan(db: AsyncSession, owner_user_id: str) -> Optional[PlanRec
     slots_rows = await slots_crud.list_slots(db, owner_user_id)
 
     if not tasks_rows or not slots_rows:
-        return None
+        # Still allow if there are parent tasks
+        pass
 
     habits_rows = await habits_crud.list_habits(db, owner_user_id)
     settings = await _tune_settings_with_feedback(db, owner_user_id)
@@ -111,6 +137,34 @@ async def rebuild_plan(db: AsyncSession, owner_user_id: str) -> Optional[PlanRec
     tasks = [_model_to_task(t) for t in tasks_rows]
     free_slots = [_model_to_slot(s) for s in slots_rows]
     habits = [_model_to_habit(h) for h in habits_rows]
+
+    # ------------------------------------------------------------------
+    # Handle repeat=daily tasks: reset progressMinutes so planner schedules
+    # them every day (they never "complete" from planner's perspective).
+    # ------------------------------------------------------------------
+    def _reset_progress(t: TaskSchema) -> TaskSchema:
+        d = t.model_dump(by_alias=True)
+        d["progressMinutes"] = 0
+        return TaskSchema(**d)
+
+    tasks = [
+        _reset_progress(t) if getattr(task_row, "repeat", "none") == "daily" else t
+        for t, task_row in zip(tasks, tasks_rows)
+    ]
+
+    # ------------------------------------------------------------------
+    # Merge parent-assigned tasks into planner input (P1)
+    # ------------------------------------------------------------------
+    from app.crud.assigned import list_assigned_tasks_active_for_planner
+    parent_task_rows = await list_assigned_tasks_active_for_planner(db, owner_user_id)
+    parent_meta: dict[str, dict] = {}  # task_id -> {locked, title}
+    for pt in parent_task_rows:
+        pt_task = _parent_task_to_task_schema(pt)
+        tasks.append(pt_task)
+        parent_meta[pt.id] = {"locked": pt.locked, "title": pt.title, "estimated_minutes": pt.estimated_minutes or 30}
+
+    if not tasks or not free_slots:
+        return None
 
     plan = generate_plan(
         tasks=tasks,
@@ -121,6 +175,11 @@ async def rebuild_plan(db: AsyncSession, owner_user_id: str) -> Optional[PlanRec
         previous_plan_version=latest_plan.plan_version if latest_plan else None,
     )
     plan.owner_user_id = owner_user_id
+
+    # ------------------------------------------------------------------
+    # Post-process: badge metadata for parent task sessions + locked alerts
+    # ------------------------------------------------------------------
+    _tag_parent_sessions(plan, parent_meta)
 
     await plan_crud.save_plan(db, plan)
     return plan
@@ -138,8 +197,6 @@ async def rebuild_plan_partial(db: AsyncSession, owner_user_id: str) -> Optional
 
     tasks_rows = await tasks_crud.list_tasks(db, owner_user_id)
     slots_rows = await slots_crud.list_slots(db, owner_user_id)
-    if not tasks_rows or not slots_rows:
-        return None
 
     habits_rows = await habits_crud.list_habits(db, owner_user_id)
     settings = await _tune_settings_with_feedback(db, owner_user_id)
@@ -147,6 +204,28 @@ async def rebuild_plan_partial(db: AsyncSession, owner_user_id: str) -> Optional
     tasks = [_model_to_task(t) for t in tasks_rows]
     free_slots = [_model_to_slot(s) for s in slots_rows]
     habits = [_model_to_habit(h) for h in habits_rows]
+
+    # Handle repeat=daily tasks: reset progress
+    def _reset_progress_partial(t: TaskSchema) -> TaskSchema:
+        d = t.model_dump(by_alias=True)
+        d["progressMinutes"] = 0
+        return TaskSchema(**d)
+
+    tasks = [
+        _reset_progress_partial(t) if getattr(task_row, "repeat", "none") == "daily" else t
+        for t, task_row in zip(tasks, tasks_rows)
+    ]
+
+    # Merge parent tasks (P1)
+    from app.crud.assigned import list_assigned_tasks_active_for_planner
+    parent_task_rows = await list_assigned_tasks_active_for_planner(db, owner_user_id)
+    parent_meta: dict[str, dict] = {}
+    for pt in parent_task_rows:
+        tasks.append(_parent_task_to_task_schema(pt))
+        parent_meta[pt.id] = {"locked": pt.locked, "title": pt.title, "estimated_minutes": pt.estimated_minutes or 30}
+
+    if not tasks or not free_slots:
+        return None
 
     new_plan = generate_plan(
         tasks=tasks,
@@ -157,6 +236,8 @@ async def rebuild_plan_partial(db: AsyncSession, owner_user_id: str) -> Optional
         previous_plan_version=latest_plan.plan_version if latest_plan else None,
     )
     new_plan.owner_user_id = owner_user_id
+    _tag_parent_sessions(new_plan, parent_meta)
+
     # Merge: locked sessions first, then new unlocked sessions
     merged_sessions = locked_sessions + [
         s for s in new_plan.sessions
@@ -166,3 +247,81 @@ async def rebuild_plan_partial(db: AsyncSession, owner_user_id: str) -> Optional
 
     await plan_crud.save_plan(db, new_plan)
     return new_plan
+
+
+# ---------------------------------------------------------------------------
+# Parent task → TaskSchema converter (for planner input)
+# ---------------------------------------------------------------------------
+
+def _parent_task_to_task_schema(pt) -> TaskSchema:
+    """Convert a ParentAssignedTask ORM row to a TaskSchema for the planner."""
+    now = datetime.now(_TZ_VN)
+    if pt.deadline:
+        # deadline is stored as "YYYY-MM-DD"
+        deadline_str = f"{pt.deadline}T23:59:59+07:00"
+    else:
+        deadline_str = (now + timedelta(days=7)).isoformat()
+
+    estimated = pt.estimated_minutes or 30
+    # Boost priority for locked tasks
+    importance = 3 if pt.locked else 2
+
+    return TaskSchema(
+        id=pt.id,
+        subject=pt.subject or "Duoc giao",
+        title=pt.title,
+        deadline=deadline_str,
+        timezone="Asia/Ho_Chi_Minh",
+        difficulty=pt.priority,          # priority 1-3 maps to difficulty 1-3
+        durationEstimateMin=estimated,
+        durationEstimateMax=estimated,
+        durationUnit="minutes",
+        estimatedMinutes=estimated,
+        importance=importance,
+        successCriteria=[f"Hoan thanh: {pt.title}"],
+        progressMinutes=0,
+        lockedByParent=pt.locked,
+        createdByRole="parent",
+        createdAt=pt.created_at if hasattr(pt, "created_at") else now,
+        updatedAt=pt.updated_at if hasattr(pt, "updated_at") else now,
+        source="parent",
+        locked=getattr(pt, "locked", False),
+        schedulingStyle=getattr(pt, "scheduling_style", "balanced"),
+        durationMode="estimate",
+    )
+
+
+def _tag_parent_sessions(plan: PlanRecordSchema, parent_meta: dict) -> None:
+    """Post-process plan sessions: inject badge metadata for parent task sessions."""
+    if not parent_meta:
+        return
+
+    processed = []
+    for s in plan.sessions:
+        if not isinstance(s, dict):
+            s = s.model_dump(by_alias=True)
+        tid = s.get("taskId") or s.get("task_id")
+        if tid and tid in parent_meta:
+            meta = parent_meta[tid]
+            s["sourceType"] = "parent_task"
+            s["lockedByParent"] = meta["locked"]
+            s["badgeLabel"] = "Phu huynh giao \U0001f512" if meta["locked"] else "Phu huynh giao"
+        processed.append(s)
+    plan.sessions = processed
+
+    # Add alerts for locked tasks that ended up in unscheduled
+    unscheduled_ids = {
+        ut.get("id") for ut in (plan.unscheduled_tasks or []) if isinstance(ut, dict)
+    }
+    for tid, meta in parent_meta.items():
+        if meta["locked"] and tid in unscheduled_ids:
+            plan.suggestions.append(
+                PlanSuggestionSchema(
+                    type="increase_free_time",
+                    message=(
+                        f"LOCKED|{tid}|Nhiem vu bat buoc '{meta['title']}' "
+                        f"thieu {meta['estimated_minutes']} phut slot. "
+                        "Them slot hoac giam nhiem vu khac."
+                    ),
+                )
+            )

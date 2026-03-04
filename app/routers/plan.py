@@ -59,7 +59,20 @@ async def update_session_status(
     plan = await plan_crud.update_session_status(db, session_id, payload.status, current_user.id)
     if plan is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return {"ok": True}
+
+    # Commit so that task.progress_minutes changes are persisted
+    await db.commit()
+
+    # Return updated task progress for quick FE sync
+    task_progress = None
+    for s in (plan.sessions or []):
+        if s.get("id") == session_id:
+            tid = s.get("taskId") or s.get("task_id")
+            if tid:
+                task_progress = await plan_crud.get_task_progress(db, tid, current_user.id)
+            break
+
+    return {"ok": True, "task_progress": task_progress}
 
 
 class SessionLockUpdate(BaseModel):

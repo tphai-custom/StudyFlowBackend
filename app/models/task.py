@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -38,3 +38,32 @@ class Task(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+    # ── Parent-task fields (added in migration k0l1m2n3o4p5) ─────────────────
+    # source: 'student' | 'parent'
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="student")
+    # locked = bắt buộc (parent sets true, planner prioritizes)
+    locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # repeat: 'none' | 'daily' | 'weekly'
+    repeat: Mapped[str] = mapped_column(String(16), nullable=False, default="none")
+    child_can_delete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    child_can_edit_core: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    parent_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    # ── Duration mode (added in migration l1m2n3o4p5q6) ─────────────────────
+    # duration_mode: 'exact' | 'estimate'
+    duration_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="estimate")
+    # exact: single value in minutes
+    duration_minutes_exact: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # estimate: min/max range in minutes
+    duration_minutes_min: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    duration_minutes_max: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # ── Scheduling style (added in migration l1m2n3o4p5q6) ───────────────────
+    # 'front-load' | 'balanced' | 'deadline-loaded'
+    scheduling_style: Mapped[str] = mapped_column(String(32), nullable=False, default="balanced")
+
+    # ── Target minutes (added in migration n2o3p4q5r6s7) ────────────────────
+    # Computed: exact → exact_minutes; estimate → clamp(mid, min, max)
+    # Planner uses this as a hard ceiling: sum(study_minutes) == target_minutes
+    target_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

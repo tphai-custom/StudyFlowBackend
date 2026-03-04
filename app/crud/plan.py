@@ -111,6 +111,7 @@ async def update_session_status(
     if plan is None:
         return None
     sessions = list(plan.sessions)
+    found = False
     for i, session in enumerate(sessions):
         if session.get("id") == session_id:
             sessions[i] = {
@@ -118,12 +119,95 @@ async def update_session_status(
                 "status": status,
                 "completedAt": datetime.utcnow().isoformat() if status == "done" else None,
             }
+            found = True
             break
-    else:
+    if not found:
         return None  # session not found
     plan.sessions = sessions
     await db.flush()
+
+    # --- Recompute task progress_minutes after session status change ---
+    from app.models.task import Task
+    from sqlalchemy import select as sa_select
+
+    # Collect all task_ids that have sessions in this plan
+    task_minutes: dict[str, int] = {}
+    for s in sessions:
+        tid = s.get("taskId") or s.get("task_id")
+        if not tid or s.get("source") == "break":
+            continue
+        if s.get("status") == "done":
+            task_minutes[tid] = task_minutes.get(tid, 0) + (s.get("minutes") or 0)
+        else:
+            # ensure task appears with 0 if not already set
+            if tid not in task_minutes:
+                task_minutes[tid] = 0
+
+    # Update affected tasks
+    if task_minutes:
+        task_result = await db.execute(
+            sa_select(Task).where(
+                Task.owner_user_id == owner_user_id,
+                Task.id.in_(list(task_minutes.keys())),
+            )
+        )
+        tasks_to_update = list(task_result.scalars().all())
+        for task in tasks_to_update:
+            task.progress_minutes = task_minutes.get(task.id, 0)
+        await db.flush()
+
     return plan
+
+
+async def get_task_progress(
+    db: AsyncSession, task_id: str, owner_user_id: str
+) -> dict:
+    """Compute live task progress from latest plan sessions."""
+    from app.models.task import Task
+    from sqlalchemy import select as sa_select
+
+    plan = await get_latest_plan(db, owner_user_id)
+    task_result = await db.execute(
+        sa_select(Task).where(Task.id == task_id, Task.owner_user_id == owner_user_id)
+    )
+    task = task_result.scalar_one_or_none()
+    if not task:
+        return {}
+
+    done_minutes = 0
+    total_sessions = 0
+    done_sessions = 0
+    planned_minutes = task.estimated_minutes or 1
+
+    if plan:
+        for s in (plan.sessions or []):
+            tid = s.get("taskId") or s.get("task_id")
+            if tid != task_id or s.get("source") == "break":
+                continue
+            total_sessions += 1
+            if s.get("status") == "done":
+                done_sessions += 1
+                done_minutes += s.get("minutes", 0)
+
+    if total_sessions > 0:
+        planned_minutes = sum(
+            s.get("minutes", 0)
+            for s in (plan.sessions or [])
+            if (s.get("taskId") or s.get("task_id")) == task_id and s.get("source") != "break"
+        )
+        planned_minutes = max(planned_minutes, 1)
+
+    progress_percent = round(done_minutes / planned_minutes * 100) if planned_minutes > 0 else 0
+    progress_percent = min(100, progress_percent)
+
+    return {
+        "task_id": task_id,
+        "planned_minutes": planned_minutes,
+        "done_minutes": done_minutes,
+        "progress_percent": progress_percent,
+        "sessions_done": done_sessions,
+        "total_sessions": total_sessions,
+    }
 
 
 async def toggle_session_lock(

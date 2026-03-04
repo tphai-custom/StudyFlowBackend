@@ -21,7 +21,7 @@ from app.database import get_db
 from app.models.library import LibraryItem
 from app.models.user import User
 from app.schemas.feedback import FeedbackAdminUpdate, FeedbackSchema
-from app.schemas.library import LibraryItemCreate, LibraryItemSchema
+from app.schemas.library import LibraryItemCreate, LibraryItemSchema, LibrarySeedRequest, LibrarySeedResponse
 from app.schemas.plan_override import PlanOverrideCreate, PlanOverrideSchema
 from app.schemas.task import TaskSchema
 from app.schemas.user import UserPublic
@@ -220,4 +220,35 @@ async def admin_delete_library_item(
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu")
     await db.commit()
+
+
+@router.post("/library/seed", response_model=LibrarySeedResponse)
+async def admin_seed_library(
+    payload: LibrarySeedRequest,
+    db: AsyncSession = Depends(get_db),
+    _admin: User = Depends(require_role("admin")),
+):
+    """Upsert v2 library seed data for a subset of grades and subjects.
+
+    Body example::
+
+        {"grades": [6, 7, 8], "subjects": ["toan", "tieng_anh"], "mode": "upsert"}
+
+    - grades: list of ints 6..10 (default: all)
+    - subjects: list from toan|ngu_van|tieng_anh|lich_su|dia_li (default: all)
+    - mode: currently only "upsert" is supported (insert or update by grade+subject)
+    """
+    valid_grades = [g for g in payload.grades if 6 <= g <= 10]
+    valid_subjects = [
+        s for s in payload.subjects
+        if s in ["toan", "ngu_van", "tieng_anh", "lich_su", "dia_li"]
+    ]
+    if not valid_grades:
+        raise HTTPException(status_code=400, detail="grades phải nằm trong khoảng 6–10")
+    if not valid_subjects:
+        raise HTTPException(status_code=400, detail="subjects không hợp lệ")
+
+    result = await library_crud.upsert_seed_library_v2(db, valid_grades, valid_subjects)
+    await db.commit()
+    return result
 

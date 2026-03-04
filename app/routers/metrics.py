@@ -56,6 +56,7 @@ def _compute_feasibility(
     daily_limit: int,
     total_slot_minutes: int,
     total_demand: int,
+    all_sessions_in_range: list | None = None,
 ) -> tuple[int, list[str]]:
     """Return (score 0-100, [reasons])."""
     reasons: list[str] = []
@@ -87,18 +88,20 @@ def _compute_feasibility(
             f"Thiếu slot: cần {total_demand}p nhưng chỉ có {total_slot_minutes}p rảnh"
         )
 
-    # 3. Break buffer check — penalise if no break sessions at all on loaded days
+    # 3. Break buffer check — penalise only heavy days (≥90 min) that have no break session
+    _break_source = all_sessions_in_range if all_sessions_in_range is not None else sessions_in_range
     break_days = {
         (s.get("plannedStart") or "")[:10]
-        for s in sessions_in_range
+        for s in _break_source
         if s.get("source") == "break"
     }
-    focus_days = set(by_day.keys())
-    missing_breaks = focus_days - break_days
+    # Only flag days with significant load — short days don't require a break session
+    heavy_days = {day for day, mins in by_day.items() if mins >= 90}
+    missing_breaks = heavy_days - break_days
     if missing_breaks:
         penalty = min(20, len(missing_breaks) * 5)
         score -= penalty
-        reasons.append(f"Thiếu session nghỉ trong {len(missing_breaks)} ngày")
+        reasons.append(f"Thiếu session nghỉ trong {len(missing_breaks)} ngày học nặng")
 
     # 4. Deadline pressure — tasks due within 48h and still unscheduled → handled upstream
     score = max(0, min(100, score))
@@ -135,10 +138,13 @@ async def get_plan_metrics(
         }
 
     all_sessions: list = plan.sessions or []
-    sessions_in_range = [
+    all_sessions_in_range = [
         s for s in all_sessions
+        if range_start.isoformat()[:10] <= (s.get("plannedStart") or "")[:10] < range_end.isoformat()[:10]
+    ]
+    sessions_in_range = [
+        s for s in all_sessions_in_range
         if s.get("source") != "break"
-        and range_start.isoformat()[:10] <= (s.get("plannedStart") or "")[:10] < range_end.isoformat()[:10]
     ]
 
     total = len(sessions_in_range)
@@ -159,6 +165,7 @@ async def get_plan_metrics(
         daily_limit=settings_row.daily_limit_minutes,
         total_slot_minutes=total_slot_minutes,
         total_demand=total_demand,
+        all_sessions_in_range=all_sessions_in_range,
     )
 
     return {

@@ -27,7 +27,11 @@ from app.schemas.parent import (
     SuggestionSchema,
     SuggestionStatusUpdate,
     WeeklySummary,
+    DailyReport,
+    SettingsLockUpdate,
+    SettingsLockSchema,
 )
+from app.schemas.task import ParentTaskCreate, TaskSchema
 
 router = APIRouter(prefix="/parent", tags=["parent"])
 
@@ -252,6 +256,65 @@ async def child_weekly_summary(
     return await crud.get_weekly_summary(db, student_id, week)
 
 
+@router.get("/students/{student_id}/daily-report", response_model=DailyReport)
+async def child_daily_report(
+    student_id: str,
+    date: Optional[str] = Query(default=None, description="YYYY-MM-DD; defaults to today"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("parent")),
+):
+    """Return daily planned vs done minutes for a linked student."""
+    await _require_active_link(db, current_user.id, student_id)
+    return await crud.get_daily_report(db, student_id, date)
+
+
+# ---------------------------------------------------------------------------
+# Parent Settings Lock
+# ---------------------------------------------------------------------------
+
+@router.get("/students/{student_id}/settings-lock", response_model=SettingsLockSchema)
+async def get_student_settings_lock(
+    student_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("parent")),
+):
+    """Get locked settings fields for a linked student (returns empty lock if none set)."""
+    await _require_active_link(db, current_user.id, student_id)
+    lock = await crud.get_settings_lock(db, student_id, current_user.id)
+    if lock is None:
+        return SettingsLockSchema(student_id=student_id, parent_id=current_user.id, locked_fields=[])
+    return lock
+
+
+@router.put("/students/{student_id}/settings-lock", response_model=SettingsLockSchema)
+async def update_student_settings_lock(
+    student_id: str,
+    payload: SettingsLockUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("parent")),
+):
+    """Set which settings fields are locked for a linked student."""
+    await _require_active_link(db, current_user.id, student_id)
+    from app.schemas.parent import LOCKABLE_FIELDS
+    # Validate: only allow known lockable fields
+    invalid = [f for f in payload.locked_fields if f not in LOCKABLE_FIELDS]
+    if invalid:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=f"Không hợp lệ: {invalid}. Cho phép: {LOCKABLE_FIELDS}")
+    lock = await crud.upsert_settings_lock(db, student_id, current_user.id, payload.locked_fields, payload.locked_values)
+    await db.commit()
+    return lock
+
+
+@router.get("/student/settings-locked-fields", response_model=list[str])
+async def my_locked_fields(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("student")),
+):
+    """Student endpoint: returns list of fields locked by any parent."""
+    return await crud.get_locked_fields_for_student(db, current_user.id)
+
+
 # ---------------------------------------------------------------------------
 # Enriched child data (tasks/plan/stats with filter)
 # ---------------------------------------------------------------------------
@@ -325,6 +388,9 @@ async def get_student_stats(
     done = 0
     subject_minutes: dict = {}
     for s in sessions:
+        # E: Exclude break sessions from progress statistics
+        if s.get("source") == "break":
+            continue
         ps = s.get("plannedStart") or s.get("planned_start", "")
         try:
             dt = datetime.fromisoformat(ps.replace("Z", "+00:00"))
@@ -458,3 +524,44 @@ async def student_notes(
 ):
     """Student sees all notes sent to them."""
     return await crud.list_notes(db, current_user.id)
+
+
+# ---------------------------------------------------------------------------
+# Parent creates a task for a linked student (B/H)
+# ---------------------------------------------------------------------------
+
+@router.post("/tasks", response_model=TaskSchema, status_code=status.HTTP_201_CREATED)
+async def parent_create_task(
+    payload: ParentTaskCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("parent")),
+):
+    """Parent assigns a task directly into the student's task list."""
+    await _require_active_link(db, current_user.id, payload.student_id)
+    task = await tasks_crud.create_parent_task(
+        db,
+        parent_id=current_user.id,
+        student_id=payload.student_id,
+        title=payload.title,
+        subject=payload.subject,
+        description=payload.description,
+        deadline=payload.deadline,
+        estimated_minutes=payload.estimated_minutes,
+        priority=payload.priority,
+        locked=payload.locked,
+        repeat=payload.repeat,
+    )
+    await db.commit()
+    await db.refresh(task)
+    return task
+
+
+@router.get("/students/{student_id}/tasks", response_model=list[TaskSchema])
+async def parent_list_student_tasks(
+    student_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("parent")),
+):
+    """Parent views all tasks belonging to a linked student."""
+    await _require_active_link(db, current_user.id, student_id)
+    return await tasks_crud.list_tasks(db, student_id)

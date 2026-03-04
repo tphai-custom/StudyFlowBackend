@@ -1,6 +1,8 @@
 """Router: parent-assigned tasks, habits, ideas, parent settings (Giao nhiệm vụ)."""
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +20,7 @@ from app.schemas.assigned import (
     AssignedTaskCreate,
     AssignedTaskSchema,
     AssignedTaskUpdate,
+    ConvertTaskResponse,
     HabitTickCreate,
     HabitTickSchema,
     IdeaAccept,
@@ -26,6 +29,7 @@ from app.schemas.assigned import (
     ParentSettingsSchema,
     ParentSettingsUpdate,
     StudentTaskAction,
+    StudentTaskEstimate,
     TaskItemCreate,
     TaskItemSchema,
     TaskItemUpdate,
@@ -128,6 +132,7 @@ async def student_list_assigned_tasks(
 )
 async def student_accept_task(
     task_id: str,
+    payload: Optional[StudentTaskEstimate] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("student")),
 ):
@@ -139,6 +144,195 @@ async def student_accept_task(
     if task.status == "ASSIGNED" or task.status == "SEEN":
         task.status = "ACCEPTED"
         await db.flush()
+    if payload and payload.estimated_minutes:
+        await crud.set_task_estimate(db, task, payload.estimated_minutes)
+    await db.commit()
+    await db.refresh(task)
+    return task
+
+
+@router.post(
+    "/student/assigned-tasks/{task_id}/add-to-plan",
+    status_code=202,
+)
+async def student_add_assigned_task_to_plan(
+    task_id: str,
+    payload: Optional[StudentTaskEstimate] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("student")),
+):
+    """Accept task + trigger plan rebuild so the parent task is included in the calendar.
+
+    Returns:
+        { "task_status": ..., "plan": { planVersion, ... }, "in_plan": bool }
+    """
+    from app.planner.plan_service import rebuild_plan as _rebuild
+
+    task = await crud.get_assigned_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Nhiệm vụ không tồn tại")
+    if task.student_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Không có quyền truy cập")
+
+    # Accept the task
+    if task.status in ("ASSIGNED", "SEEN"):
+        task.status = "ACCEPTED"
+        await db.flush()
+    if payload and payload.estimated_minutes:
+        await crud.set_task_estimate(db, task, payload.estimated_minutes)
+    await db.commit()
+    await db.refresh(task)
+
+    # Rebuild plan to include this task
+    plan = await _rebuild(db, current_user.id)
+    if plan:
+        await db.commit()
+
+    # Check if task ended up scheduled
+    in_plan = False
+    if plan:
+        in_plan = any(
+            (s.get("taskId") if isinstance(s, dict) else getattr(s, "task_id", None)) == task_id
+            for s in (plan.sessions or [])
+        )
+
+    return {
+        "task_status": task.status,
+        "in_plan": in_plan,
+        "plan_version": plan.plan_version if plan else None,
+    }
+
+
+@router.post(
+    "/student/assigned-tasks/{task_id}/convert",
+    response_model=ConvertTaskResponse,
+    status_code=200,
+)
+async def student_convert_assigned_task(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("student")),
+):
+    """
+    B3: Convert a parent-assigned task into a real Task record (source='parent', locked=True).
+    - If already converted: returns {task_id=converted_task_id, assignment_status, already_converted=True}
+    - If new: creates Task, marks assignment CONVERTED, returns {task_id, already_converted=False}
+    """
+    import uuid as _uuid
+    from datetime import datetime
+    from app.models.task import Task as TaskModel
+
+    assignment = await crud.get_assigned_task(db, task_id)
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Nhiệm vụ không tồn tại")
+    if assignment.student_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Không có quyền truy cập")
+
+    # Already converted — idempotent
+    if assignment.converted_task_id:
+        return ConvertTaskResponse(
+            task_id=assignment.converted_task_id,
+            assignment_status=assignment.status,
+            already_converted=True,
+        )
+
+    # Compute estimated_minutes for the new task
+    duration_mode = getattr(assignment, "duration_mode", "estimate")
+    exact = getattr(assignment, "duration_minutes_exact", None)
+    t_min = getattr(assignment, "duration_minutes_min", None)
+    t_max = getattr(assignment, "duration_minutes_max", None)
+
+    if duration_mode == "exact" and exact and exact > 0:
+        estimated_minutes = exact
+    elif t_min and t_max and t_min > 0 and t_max > 0:
+        estimated_minutes = (t_min + t_max) // 2
+    else:
+        estimated_minutes = assignment.estimated_minutes or 60
+
+    # Compute target_minutes with clamp
+    from app.crud.tasks import compute_target_minutes as _compute_target
+    target_minutes = _compute_target(duration_mode, exact, t_min, t_max, estimated_minutes)
+
+    # Build deadline: use assignment.deadline or 7 days from now
+    from datetime import timedelta, timezone
+    _TZ_VN = timezone(timedelta(hours=7))
+    if assignment.deadline:
+        deadline_str = f"{assignment.deadline}T23:59:00+07:00"
+    else:
+        deadline_str = (datetime.now(_TZ_VN) + timedelta(days=7)).isoformat()
+
+    # Create the real Task
+    new_task = TaskModel(
+        id=str(_uuid.uuid4()),
+        subject=assignment.subject or "Chung",
+        title=assignment.title,
+        deadline=deadline_str,
+        timezone="Asia/Ho_Chi_Minh",
+        difficulty=2,
+        duration_estimate_min=t_min or estimated_minutes,
+        duration_estimate_max=t_max or estimated_minutes,
+        duration_unit="minutes",
+        estimated_minutes=estimated_minutes,
+        importance=None,
+        content_focus=assignment.description,
+        success_criteria=[],
+        milestones=None,
+        notes=None,
+        progress_minutes=0,
+        locked_by_parent=assignment.locked,
+        created_by_role="parent",
+        owner_user_id=current_user.id,
+        source="parent",
+        locked=assignment.locked,
+        repeat="none",
+        child_can_delete=False,
+        child_can_edit_core=False,
+        parent_id=assignment.parent_id,
+        duration_mode=duration_mode,
+        duration_minutes_exact=exact,
+        duration_minutes_min=t_min,
+        duration_minutes_max=t_max,
+        scheduling_style=getattr(assignment, "scheduling_style", "balanced"),
+        target_minutes=target_minutes,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(new_task)
+    await db.flush()
+
+    # Mark assignment as CONVERTED
+    assignment.status = "CONVERTED"
+    assignment.converted_task_id = new_task.id
+    await db.flush()
+    await db.commit()
+    await db.refresh(assignment)
+
+    return ConvertTaskResponse(
+        task_id=new_task.id,
+        assignment_status="CONVERTED",
+        already_converted=False,
+    )
+
+
+@router.post(
+    "/student/assigned-tasks/{task_id}/estimate",
+    response_model=AssignedTaskSchema,
+)
+async def student_set_task_estimate(
+    task_id: str,
+    payload: StudentTaskEstimate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("student")),
+):
+    """Student sets estimated_minutes for a parent task (needed for planner integration)."""
+    if payload.estimated_minutes is None:
+        raise HTTPException(status_code=422, detail="estimated_minutes là bắt buộc")
+    task = await crud.get_assigned_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Nhiệm vụ không tồn tại")
+    if task.student_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Không có quyền truy cập")
+    await crud.set_task_estimate(db, task, payload.estimated_minutes)
     await db.commit()
     await db.refresh(task)
     return task
