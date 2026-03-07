@@ -35,7 +35,9 @@ def compute_target_minutes(
 
 async def list_tasks(db: AsyncSession, owner_user_id: str) -> list[Task]:
     result = await db.execute(
-        select(Task).where(Task.owner_user_id == owner_user_id).order_by(Task.created_at)
+        select(Task)
+        .where(Task.owner_user_id == owner_user_id, Task.deleted_at.is_(None))
+        .order_by(Task.created_at)
     )
     return list(result.scalars().all())
 

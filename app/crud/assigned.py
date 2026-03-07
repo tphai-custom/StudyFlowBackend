@@ -80,6 +80,7 @@ async def list_assigned_tasks_for_parent(
         .where(
             ParentAssignedTask.parent_id == parent_id,
             ParentAssignedTask.student_id == student_id,
+            ParentAssignedTask.deleted_at.is_(None),
         )
         .order_by(ParentAssignedTask.created_at.desc())
     )
@@ -94,10 +95,24 @@ async def list_assigned_tasks_for_student(
         .where(
             ParentAssignedTask.student_id == student_id,
             ParentAssignedTask.status.notin_(["ARCHIVED"]),
+            ParentAssignedTask.deleted_at.is_(None),
         )
         .order_by(ParentAssignedTask.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+async def soft_delete_assigned_task(
+    db: AsyncSession,
+    task: ParentAssignedTask,
+    deleted_by_user_id: str,
+) -> ParentAssignedTask:
+    """Soft-delete a parent-assigned task — sets deleted_at = now()."""
+    from datetime import timezone as _tz
+    task.deleted_at = datetime.now(_tz.utc)
+    task.deleted_by_user_id = deleted_by_user_id
+    await db.flush()
+    return task
 
 
 async def list_assigned_tasks_active_for_planner(
@@ -112,6 +127,7 @@ async def list_assigned_tasks_active_for_planner(
         select(ParentAssignedTask).where(
             ParentAssignedTask.student_id == student_id,
             ParentAssignedTask.status.notin_(["DONE", "VERIFIED", "ARCHIVED"]),
+            ParentAssignedTask.deleted_at.is_(None),
         )
     )
     rows = list(result.scalars().all())

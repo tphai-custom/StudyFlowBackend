@@ -129,6 +129,7 @@ async def exchange_summary(db: AsyncSession, student_id: str, today_date: str) -
         select(func.count()).where(
             ParentAssignedTask.student_id == student_id,
             ParentAssignedTask.status.in_(["ASSIGNED", "SEEN"]),
+            ParentAssignedTask.deleted_at.is_(None),
         )
     )
     pending_tasks = tasks_result.scalar_one() or 0
@@ -233,12 +234,13 @@ async def build_banners(db: AsyncSession, student_id: str, today_date: str) -> l
     from app.models.assigned import ParentAssignedTask, ParentAssignedHabit, HabitTick
     banners = []
 
-    # Locked tasks not yet accepted / not in plan
+    # Locked tasks not yet accepted / not in plan (exclude soft-deleted)
     locked_result = await db.execute(
         select(ParentAssignedTask).where(
             ParentAssignedTask.student_id == student_id,
             ParentAssignedTask.locked == True,
             ParentAssignedTask.status.notin_(["DONE", "VERIFIED", "ARCHIVED"]),
+            ParentAssignedTask.deleted_at.is_(None),
         )
     )
     locked_tasks = list(locked_result.scalars().all())

@@ -67,3 +67,7 @@ class Task(Base):
     # Computed: exact → exact_minutes; estimate → clamp(mid, min, max)
     # Planner uses this as a hard ceiling: sum(study_minutes) == target_minutes
     target_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # ── Soft-delete (added in migration p4q5r6s7t8u9) ───────────────────────
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by_user_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)

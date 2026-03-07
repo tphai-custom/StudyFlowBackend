@@ -115,7 +115,13 @@ async def _tune_settings_with_feedback(db: AsyncSession, owner_user_id: str) -> 
         if "buffer_percent" in locked_values and locked_values["buffer_percent"] is not None:
             settings.buffer_percent = float(locked_values["buffer_percent"])
         if "break_preset" in locked_values and locked_values["break_preset"] is not None:
-            settings.break_preset = locked_values["break_preset"]
+            bp = locked_values["break_preset"]
+            if isinstance(bp, dict):
+                from app.schemas.settings import BreakPresetSchema as _BPS
+                settings.break_preset = _BPS(**bp)
+            elif hasattr(bp, "focus"):
+                settings.break_preset = bp
+            # else: invalid value (e.g. stale int), keep the student's own preset
         if "timezone" in locked_values and locked_values["timezone"] is not None:
             settings.timezone = locked_values["timezone"]
 

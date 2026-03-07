@@ -552,6 +552,66 @@ def generate_plan(
             else None
         )
 
+    # ── Pre-compute balanced quotas: 3 days/week, evenly spread ─────────────
+    # For each balanced task, compute how many minutes to schedule per study-day.
+    # Formula: weeks = ceil(days_until_deadline / 7), study_days = weeks × 3,
+    #          minutes_per_day = ceil(total_remaining / study_days)
+    balanced_quota: dict[str, int] = {}   # task_id → target minutes per study day
+    balanced_week_usage: dict[tuple, int] = {}  # (task_id, week_idx) → # days used this week
+
+    for t in prioritized:
+        style = getattr(t, "scheduling_style", "balanced")
+        if style != "balanced":
+            continue
+        rm = task_remaining.get(t.id, 0)
+        if rm <= 0:
+            continue
+        deadline_dt = _as_vn_aware(t.deadline)
+        days_until_dl = max(1, _days_until(deadline_dt, now))
+        num_weeks = max(1, (days_until_dl + 6) // 7)       # ceil(days / 7)
+        total_slots = num_weeks * 3                         # 3 days per week
+        raw_quota = max(
+            MIN_SESSION_MINUTES,
+            (rm + total_slots - 1) // total_slots,          # ceil division
+        )
+        # Round up to the nearest 10 minutes (e.g. 14 → 20, 34 → 40)
+        balanced_quota[t.id] = ((raw_quota + 9) // 10) * 10
+
+    # ── Pre-compute deadline-loaded quotas: 30% first half, 70% second half ──
+    # First half  (now → midpoint) : 30% of remaining minutes, 3 days/week
+    # Second half (midpoint → deadline): 70% of remaining minutes, 3 days/week
+    # Both halves: per-day quota rounded up to nearest 10 min
+    deadline_loaded_quota: dict[str, dict] = {}  # task_id → {midpoint, q1, q2}
+    deadline_week_usage: dict[tuple, int] = {}   # (task_id, week_idx) → days used
+
+    for t in prioritized:
+        style = getattr(t, "scheduling_style", "balanced")
+        if style != "deadline-loaded":
+            continue
+        rm = task_remaining.get(t.id, 0)
+        if rm <= 0:
+            continue
+        deadline_dt = _as_vn_aware(t.deadline)
+        days_until_dl = max(2, _days_until(deadline_dt, now))
+        half_days = max(1, days_until_dl // 2)
+        midpoint_str = (now + timedelta(days=half_days)).strftime("%Y-%m-%d")
+
+        first_min = round(rm * 0.30)
+        second_min = rm - first_min
+
+        num_weeks_1 = max(1, (half_days + 6) // 7)
+        slots_1 = num_weeks_1 * 3
+        raw_q1 = max(MIN_SESSION_MINUTES, (first_min + slots_1 - 1) // slots_1)
+        q1 = ((raw_q1 + 9) // 10) * 10
+
+        second_days = days_until_dl - half_days
+        num_weeks_2 = max(1, (second_days + 6) // 7)
+        slots_2 = num_weeks_2 * 3
+        raw_q2 = max(MIN_SESSION_MINUTES, (second_min + slots_2 - 1) // slots_2)
+        q2 = ((raw_q2 + 9) // 10) * 10
+
+        deadline_loaded_quota[t.id] = {"midpoint": midpoint_str, "q1": q1, "q2": q2}
+
     def _emit_session(task: TaskSchema, attempt: dict, milestone_title: Optional[str] = None) -> None:
         mins = attempt["minutes"]
         buf = round(mins * settings.buffer_percent)
@@ -631,15 +691,48 @@ def generate_plan(
             if rm <= 0:
                 continue
 
-            if task.milestones:
-                for milestone in task.milestones:
-                    ms_needed = min(milestone.minutes_estimate, rm)
-                    _allocate_for_task(bucket, task, ms_needed, milestone.minutes_estimate, allow_short=True, milestone_title=milestone.title)
-                    rm = task_remaining[task.id]
-                    if rm <= 0:
-                        break
+            style = getattr(task, "scheduling_style", "balanced")
+            is_balanced = style == "balanced" and task.id in balanced_quota
+            is_dl = style == "deadline-loaded" and task.id in deadline_loaded_quota
+
+            if is_balanced or is_dl:
+                # Resolve quota and usage tracker
+                week_idx = (bucket_dt.date() - now.date()).days // 7
+                if is_balanced:
+                    usage_dict = balanced_week_usage
+                    quota = balanced_quota[task.id]
+                else:
+                    usage_dict = deadline_week_usage
+                    dl_info = deadline_loaded_quota[task.id]
+                    quota = dl_info["q1"] if bucket.iso_date <= dl_info["midpoint"] else dl_info["q2"]
+                days_used = usage_dict.get((task.id, week_idx), 0)
+                if days_used >= 3:
+                    continue  # max 3 study-days per week
+                total_consumed = 0
+                if task.milestones:
+                    remaining_quota = quota
+                    for milestone in task.milestones:
+                        if remaining_quota <= 0 or rm <= 0:
+                            break
+                        ms_needed = min(milestone.minutes_estimate, rm, remaining_quota)
+                        consumed = _allocate_for_task(bucket, task, ms_needed, milestone.minutes_estimate, allow_short=True, milestone_title=milestone.title)
+                        remaining_quota -= consumed
+                        total_consumed += consumed
+                        rm = task_remaining[task.id]
+                else:
+                    total_consumed = _allocate_for_task(bucket, task, min(quota, rm), focus_chunk)
+                if total_consumed > 0:
+                    usage_dict[(task.id, week_idx)] = days_used + 1
             else:
-                _allocate_for_task(bucket, task, rm, focus_chunk)
+                if task.milestones:
+                    for milestone in task.milestones:
+                        ms_needed = min(milestone.minutes_estimate, rm)
+                        _allocate_for_task(bucket, task, ms_needed, milestone.minutes_estimate, allow_short=True, milestone_title=milestone.title)
+                        rm = task_remaining[task.id]
+                        if rm <= 0:
+                            break
+                else:
+                    _allocate_for_task(bucket, task, rm, focus_chunk)
 
     # ── Urgent enforcement: days_left ≤ URGENT_DAYS_THRESHOLD → ensure ≥ 1 session/day ──
     # If a task is urgent but got 0 sessions on an eligible day, force a short session (C4 Rule1).
@@ -687,13 +780,53 @@ def generate_plan(
             continue
         # EDF: earliest deadline first
         leftover.sort(key=lambda t: _as_vn_aware(t.deadline).timestamp())
+        edf_bucket_dt = datetime.fromisoformat(f"{bucket.iso_date}T00:00:00+07:00")
         for task in leftover:
             if bucket.used >= bucket.allowed_minutes:
                 break
             rm = task_remaining[task.id]
             if rm <= 0:
                 continue
-            _allocate_for_task(bucket, task, rm, focus_chunk)
+            style = getattr(task, "scheduling_style", "balanced")
+            is_balanced = style == "balanced" and task.id in balanced_quota
+            is_dl = style == "deadline-loaded" and task.id in deadline_loaded_quota
+            if is_balanced or is_dl:
+                week_idx = (edf_bucket_dt.date() - now.date()).days // 7
+                if is_balanced:
+                    usage_dict = balanced_week_usage
+                    quota = balanced_quota[task.id]
+                else:
+                    usage_dict = deadline_week_usage
+                    dl_info = deadline_loaded_quota[task.id]
+                    quota = dl_info["q1"] if bucket.iso_date <= dl_info["midpoint"] else dl_info["q2"]
+                days_used = usage_dict.get((task.id, week_idx), 0)
+                if days_used >= 3:
+                    continue  # max 3 study-days per week
+                total_consumed = 0
+                if task.milestones:
+                    remaining_quota = quota
+                    for milestone in task.milestones:
+                        if remaining_quota <= 0 or rm <= 0:
+                            break
+                        ms_needed = min(milestone.minutes_estimate, rm, remaining_quota)
+                        consumed = _allocate_for_task(bucket, task, ms_needed, milestone.minutes_estimate, allow_short=True, milestone_title=milestone.title)
+                        remaining_quota -= consumed
+                        total_consumed += consumed
+                        rm = task_remaining[task.id]
+                else:
+                    total_consumed = _allocate_for_task(bucket, task, min(quota, rm), focus_chunk)
+                if total_consumed > 0:
+                    usage_dict[(task.id, week_idx)] = days_used + 1
+            else:
+                if task.milestones:
+                    for milestone in task.milestones:
+                        ms_needed = min(milestone.minutes_estimate, rm)
+                        _allocate_for_task(bucket, task, ms_needed, milestone.minutes_estimate, allow_short=True, milestone_title=milestone.title)
+                        rm = task_remaining[task.id]
+                        if rm <= 0:
+                            break
+                else:
+                    _allocate_for_task(bucket, task, rm, focus_chunk)
 
     # ── Report unscheduled tasks ──────────────────────────────────────────
     for task in prioritized:

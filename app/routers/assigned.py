@@ -111,6 +111,57 @@ async def parent_update_assigned_task(
     return task
 
 
+@router.delete(
+    "/parent/assigned-tasks/{task_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def parent_delete_assigned_task(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("parent")),
+):
+    """Soft-delete a parent-assigned task and clean up plan sessions.
+
+    - Sets deleted_at = now() on the assignment.
+    - If the assignment was converted to a real Task, soft-deletes that Task too
+      (so it disappears from the student's task list, planner, today, and plan).
+    - Removes sessions referencing the assignment/converted task from all
+      plan_records of the student.
+    """
+    from app.crud import plan as plan_crud
+    from app.crud import tasks as tasks_crud
+    from datetime import datetime, timezone as _tz
+
+    task = await crud.get_assigned_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Nhiệm vụ không tồn tại")
+    if task.parent_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Không có quyền xóa nhiệm vụ này")
+
+    student_id = task.student_id
+    converted_task_id = task.converted_task_id
+
+    # 1) Soft-delete the assignment row
+    await crud.soft_delete_assigned_task(db, task, current_user.id)
+
+    # 2) If already converted → soft-delete the real Task record too
+    if converted_task_id:
+        real_task = await tasks_crud.get_task(db, converted_task_id)
+        if real_task and real_task.owner_user_id == student_id:
+            real_task.deleted_at = datetime.now(_tz.utc)
+            real_task.deleted_by_user_id = current_user.id
+            await db.flush()
+
+    # 3) Remove sessions from all plan_records of the student
+    #    – add-to-plan sessions reference assignment id directly
+    await plan_crud.remove_task_from_plans(db, task_id, student_id)
+    #    – convert sessions reference the converted real Task id
+    if converted_task_id:
+        await plan_crud.remove_task_from_plans(db, converted_task_id, student_id)
+
+    await db.commit()
+
+
 # ---------------------------------------------------------------------------
 # Student – Assigned Tasks
 # ---------------------------------------------------------------------------

@@ -53,6 +53,10 @@ class ParentAssignedTask(Base):
     reschedule_requested_date: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     reschedule_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # ── Soft-delete ──────────────────────────────────────────────────────────
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by_user_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
